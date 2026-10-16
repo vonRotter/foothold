@@ -67,6 +67,7 @@ export class Scene3D {
   private goal = new THREE.Vector3(24, 0, 26);
   private markers = new THREE.Group();
   private markerLabels: { el: HTMLDivElement; pos: THREE.Vector3 }[] = [];
+  private previewLabels: { el: HTMLDivElement; pos: THREE.Vector3 }[] = [];
   private yaw = 0;
   private yawGoal = 0;
   private distance = 27;
@@ -658,7 +659,25 @@ export class Scene3D {
     }
   }
 
+  /** Small labels over enemies: what the selected colonist could do to them from a hovered tile. */
+  setPreviewLabels(c: Campaign, list: { at: Vec; text: string; good: boolean }[]) {
+    for (const l of this.previewLabels) l.el.remove();
+    this.previewLabels = list.map((p) => {
+      const el = document.createElement('div');
+      el.className = `preview-label${p.good ? ' good' : ''}`;
+      el.textContent = p.text;
+      this.labelLayer.appendChild(el);
+      return { el, pos: this.world(c, p.at, 1.55) };
+    });
+  }
+
   private updateMarkers() {
+    for (const m of this.previewLabels) {
+      const p = m.pos.clone().project(this.camera);
+      const visible = p.z < 1 && Math.abs(p.x) < 1 && Math.abs(p.y) < 1;
+      m.el.style.display = visible ? '' : 'none';
+      m.el.style.transform = `translate(${((p.x + 1) / 2) * this.renderer.domElement.clientWidth}px, ${((1 - p.y) / 2) * this.renderer.domElement.clientHeight}px) translate(-50%, -100%)`;
+    }
     const w = this.renderer.domElement.clientWidth;
     const h = this.renderer.domElement.clientHeight;
     for (const ch of this.markers.children) {

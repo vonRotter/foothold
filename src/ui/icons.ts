@@ -21,6 +21,7 @@ const P: Record<string, string> = {
   undo: 'M9 6L4 11l5 5M4 11h11a5 5 0 0 1 0 10h-3',
   log: 'M5 4h14v16H5zM8 8h8M8 12h8M8 16h5',
   next: 'M4 5h10v14H4zM14 12h7M18 9l3 3-3 3',
+  settings: 'M4 6h10M18 6h2M14 4v4M4 12h3M11 12h9M7 10v4M4 18h12M20 18h0M16 16v4',
 };
 
 export function icon(name: keyof typeof P | string, size = 24): string {

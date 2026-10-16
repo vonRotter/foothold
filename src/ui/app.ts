@@ -49,13 +49,15 @@ import {
   type BattleEvent,
 } from '../sim/combat';
 import { ADAPTATIONS, BUILDINGS, COSTS, DROPPABLE, PARTS, PART_ORDER, REPAIR_HP, ROLES, SCARS, SPECIES, WEAPONS } from '../sim/data';
-import { CENTER, COLONY_RADIUS, adjacent, inColony, samePos, tileAt } from '../sim/map';
+import { CENTER, COLONY_RADIUS, adjacent, coverAgainst, inColony, samePos, tileAt } from '../sim/map';
 import { chooseIntent, dissectionReport } from '../sim/mind';
 import { canStand, pathTo, reach } from '../sim/path';
 import type { AdaptationId, AttackSummary, BodyPart, BuildingKind, Campaign, Job, RoleId, Vec, WeaponId } from '../sim/types';
+import { describeSave, deserialize, serialize, type SaveFile } from '../sim/save';
 import { Scene3D, type OverlaySpec } from '../render/scene';
 import { icon } from './icons';
 import { drawPortrait } from './portrait';
+import { saveSettings, type Settings } from './settings';
 
 type Mode = 'title' | 'build' | 'deploy' | 'battle' | 'aftermath' | 'ending';
 type Aim = { kind: 'move' } | { kind: 'aim'; weapon: WeaponId } | { kind: 'throw'; weapon: WeaponId };
@@ -65,6 +67,17 @@ const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getEleme
 
 function esc(s: string): string {
   return s.replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[ch]!);
+}
+
+const SAVE_KEY = 'foothold.save';
+
+/** Browser storage can be missing or blocked (private windows, previews); never let that break the game. */
+function readSave(): SaveFile | null {
+  try {
+    return deserialize(localStorage.getItem(SAVE_KEY));
+  } catch {
+    return null;
+  }
 }
 
 const ZONE = { x0: CENTER.x - COLONY_RADIUS, y0: CENTER.y - COLONY_RADIUS, x1: CENTER.x + COLONY_RADIUS, y1: CENTER.y + COLONY_RADIUS };
@@ -93,9 +106,12 @@ export class App {
   lastSummary: AttackSummary | null = null;
   logOpen = false;
 
-  constructor(opts: { lowQuality?: boolean; instant?: boolean } = {}) {
-    this.scene = new Scene3D($('viewport'), { lowQuality: opts.lowQuality });
-    this.scene.instant = !!opts.instant;
+  settings: Settings;
+
+  constructor(settings: Settings) {
+    this.settings = settings;
+    this.scene = new Scene3D($('viewport'), { lowQuality: settings.quality === 'low' });
+    this.applySpeed();
     const canvas = this.scene.domElement;
     canvas.addEventListener('pointermove', (e) => this.onPointerMove(e));
     canvas.addEventListener('pointerdown', (e) => this.onPointerDown(e));
@@ -125,6 +141,57 @@ export class App {
     $('logbtn').onclick = () => this.toggleLog();
     $('helpbtn').textContent = '?';
     $('helpbtn').onclick = () => this.showHelp();
+    $('setbtn').innerHTML = icon('settings', 18);
+    $('setbtn').onclick = () => this.showSettings();
+  }
+
+  private applySpeed() {
+    this.scene.instant = this.settings.speed === 'instant';
+    this.scene.speed = this.settings.speed === 'fast' ? 2.5 : 1;
+  }
+
+  showSettings() {
+    if (!$('modal').hidden) return;
+    const s = this.settings;
+    const opt = (v: string, label: string, cur: string) => `<option value="${v}" ${v === cur ? 'selected' : ''}>${label}</option>`;
+    this.modal(`
+      <div class="kicker">Settings</div>
+      <h2>Settings</h2>
+      <div class="settings">
+        <label for="set-speed">Animation</label>
+        <select id="set-speed">${opt('normal', 'Normal', s.speed)}${opt('fast', 'Fast enemy turns (2.5×)', s.speed)}${opt('instant', 'Instant: no animation', s.speed)}</select>
+        <label for="set-quality">Graphics</label>
+        <select id="set-quality">${opt('high', 'High: shadows and smoothing', s.quality)}${opt('low', 'Low: for slow computers', s.quality)}</select>
+        <label for="set-models">Models</label>
+        <select id="set-models">${opt('on', 'Kenney models', s.models ? 'on' : 'off')}${opt('off', 'Simple shapes only', s.models ? 'on' : 'off')}</select>
+        <div class="note">Graphics and models apply after a reload. The campaign is saved first, so nothing is lost.</div>
+      </div>
+      <div class="actions"><button class="btn" data-act="title">Back to title</button><button class="btn" data-act="cancel">Cancel</button><button class="btn primary" data-act="apply">Apply</button></div>
+    `, {
+      cancel: () => this.closeModal(),
+      title: () => {
+        this.autosave();
+        this.closeModal();
+        location.reload();
+      },
+      apply: () => {
+        const next: Settings = {
+          speed: ($('set-speed') as HTMLSelectElement).value as Settings['speed'],
+          quality: ($('set-quality') as HTMLSelectElement).value as Settings['quality'],
+          models: ($('set-models') as HTMLSelectElement).value === 'on',
+        };
+        const reload = next.quality !== s.quality || next.models !== s.models;
+        this.settings = next;
+        saveSettings(next);
+        this.applySpeed();
+        this.closeModal();
+        this.renderCorner();
+        if (reload) {
+          this.autosave();
+          location.reload();
+        }
+      },
+    });
   }
 
   start(seed: number) {
@@ -144,6 +211,7 @@ export class App {
   // ---------------------------------------------------------------- flow
 
   showTitle() {
+    const saved = readSave();
     this.modal(`
       <div class="kicker">Prototype · seed ${this.c.seed}</div>
       <h1>FOOTHOLD</h1>
@@ -158,8 +226,64 @@ export class App {
         <kbd>Z · L · Esc</kbd><span>Undo build · log · cancel</span>
       </div>
       <p class="credits">Models by Kenney (www.kenney.nl): Space Kit, Space Station Kit, Nature Kit and Blaster Kit, CC0. Built with three.js (MIT). Full credits in CREDITS.md.</p>
-      <div class="actions"><button class="btn primary" data-act="begin">Land</button></div>
-    `, { begin: () => this.enterBuild() });
+      ${saved ? `<p class="muted">Saved campaign: ${esc(describeSave(saved))}</p>` : ''}
+      <div class="actions">${saved ? '<button class="btn" data-act="begin">New landing</button><button class="btn primary" data-act="continue">Continue</button>' : '<button class="btn primary" data-act="begin">Land</button>'}</div>
+    `, {
+      begin: () => {
+        if (!saved) return this.enterBuild();
+        this.modal(`
+          <h2>Start a new landing?</h2>
+          <p>Your saved campaign (${esc(describeSave(saved))}) will be replaced as soon as the new one saves.</p>
+          <div class="actions"><button class="btn" data-act="back">Back</button><button class="btn primary" data-act="go">New landing</button></div>
+        `, { back: () => this.showTitle(), go: () => this.enterBuild() });
+      },
+      continue: () => saved && this.restore(saved),
+    });
+  }
+
+  /** Save the campaign to this browser. Called at every point where the state is settled. */
+  private autosave() {
+    if (!this.c || campaignOver(this.c)) return;
+    try {
+      localStorage.setItem(SAVE_KEY, serialize(this.c, this.known));
+    } catch {
+      // No storage: the game still plays, it just cannot be resumed after a reload.
+    }
+  }
+
+  private clearSave() {
+    try {
+      localStorage.removeItem(SAVE_KEY);
+    } catch {
+      // Nothing to clear.
+    }
+  }
+
+  /** Pick up a saved campaign where it was left: building, deploying, or at the start of a turn. */
+  restore(f: SaveFile) {
+    this.closeModal();
+    this.c = f.campaign;
+    this.known = new Set(f.known);
+    this.tool = null;
+    this.target = null;
+    this.aim = { kind: 'move' };
+    this.scene.clearUnits();
+    this.scene.buildTerrain(this.c);
+    $('log-lines').innerHTML = '';
+    const b = this.c.battle;
+    if (this.c.build || !b) {
+      this.mode = 'build';
+      this.scene.focus({ x: 24, y: 26 }, true);
+    } else {
+      this.mode = b.phase === 'deploy' ? 'deploy' : 'battle';
+      this.scene.sync(this.c);
+      this.selected = b.units.find((u) => !u.downed && u.actions > 0)?.colonistId ?? b.units[0]?.colonistId ?? null;
+      const u = b.units.find((x) => x.colonistId === this.selected);
+      this.scene.focus(u?.pos ?? { x: 24, y: 26 }, true);
+    }
+    this.logRule('Continued');
+    this.feed(`Continuing: ${describeSave(f)}.`);
+    this.renderAll();
   }
 
   enterBuild() {
@@ -174,6 +298,7 @@ export class App {
     this.logRule(n === 1 ? 'Landing · build phase' : `Build phase · before mission ${n}`);
     this.feed(n === 1 ? 'You have landed. Set out the colony before they come.' : 'Build, heal, study the dead. Press Next mission when you are ready.');
     this.renderAll();
+    this.autosave();
   }
 
   briefing() {
@@ -213,6 +338,7 @@ export class App {
       const ap = this.c.map.approaches.find((a) => a.id === first.approach)!;
       this.feed(`The first wave will come from ${ap.name}.`, 'world');
     }
+    this.autosave();
     if (!this.helpSeen()) this.showHelp();
   }
 
@@ -246,6 +372,7 @@ export class App {
       this.showAftermath();
       return;
     }
+    if (b.phase === 'player') this.autosave();
     const sel = this.selected ? b.units.find((u) => u.colonistId === this.selected) : null;
     if (!sel || sel.downed || sel.actions === 0) {
       this.selectNext();
@@ -281,6 +408,8 @@ export class App {
     for (const id of s.died) rows.push(`<tr><td>${esc(name(id))}</td><td>Dead.</td></tr>`);
     if (this.c.lastGrowth) rows.push(`<tr><td>The world</td><td>Thorn spread across ${this.c.lastGrowth} more tiles while you buried the dead.</td></tr>`);
     const over = campaignOver(this.c);
+    if (over) this.clearSave();
+    else this.autosave();
     this.modal(`
       <div class="kicker">Mission ${s.attack} of ${this.c.totalAttacks} · over</div>
       <h2>${headline}</h2>
@@ -406,6 +535,7 @@ export class App {
   }
 
   private afterBuildChange() {
+    this.autosave();
     this.scene.buildTerrain(this.c);
     this.renderObjective();
     this.renderBar();
@@ -490,6 +620,7 @@ export class App {
     if (who) this.selected = who.colonistId;
     else if (this.selected && deploy(this.c, this.selected, t)) {
       this.scene.sync(this.c);
+      this.autosave();
       const i = b.units.findIndex((u) => u.colonistId === this.selected);
       this.selected = b.units[(i + 1) % b.units.length].colonistId;
     } else if (!inColony(t)) this.toast('Deploy inside the dashed line.');
@@ -1037,6 +1168,7 @@ export class App {
     el.querySelectorAll<HTMLSelectElement>('select[data-col]').forEach((s) => (s.onchange = () => {
       const why = setJob(c, s.dataset.col!, this.parseJob(s.value));
       if (why) this.toast(why);
+      else this.autosave();
       this.renderAll();
     }));
   }
@@ -1104,6 +1236,7 @@ export class App {
     const c = this.c;
     if (!c) return;
     const o: OverlaySpec = { hover: this.hover };
+    let previews: { at: Vec; text: string; good: boolean }[] = [];
     if (this.mode === 'build') {
       o.outline = ZONE;
       o.marks = (c.build?.placed ?? []).flatMap((p) => (p.kind === 'repair' ? [] : [p.pos]));
@@ -1138,12 +1271,19 @@ export class App {
           o.walk = r.walk;
           o.dash = r.dash;
           const h = this.hover;
+          o.targets = liveCreatures(b).filter((k) => !k.burrowed && this.weaponsFor(k.id).length > 0).map((k) => k.pos);
           if (h && (r.walk.some((p) => samePos(p, h)) || r.dash.some((p) => samePos(p, h)))) {
             const st = unitStats(c.colonists.find((x) => x.id === u.colonistId)!);
             o.path = pathTo(reach(c.map, u.pos, st.mobility * 2, colonistMoveOpts(b)), h);
             o.cover = h;
+            // From there: which enemies could this colonist shoot, how well, and would they be flanked?
+            // Moving costs one action, dashing both; a shot needs one left after the move.
+            const left = u.actions - (r.dash.some((p) => samePos(p, h)) ? 2 : 1);
+            const preview = this.previewFrom(u.colonistId, h);
+            o.targets = preview.map((p) => p.at);
+            // Dashing (or walking on the last action) leaves nothing to shoot with: no numbers then.
+            previews = left <= 0 ? [] : preview;
           }
-          o.targets = liveCreatures(b).filter((k) => !k.burrowed && this.weaponsFor(k.id).length > 0).map((k) => k.pos);
         } else if (this.aim.kind === 'aim') {
           const w = this.aim.weapon;
           o.targets = liveCreatures(b).filter((k) => canTarget(c, u.colonistId, w, k.id)).map((k) => k.pos);
@@ -1158,6 +1298,26 @@ export class App {
       }
     }
     this.scene.setOverlay(c, o);
+    this.scene.setPreviewLabels(c, previews);
+  }
+
+  /** Enemies the colonist could shoot from `at`, with the best body-shot chance and whether they'd be flanked. */
+  private previewFrom(colonistId: string, at: Vec): { at: Vec; text: string; good: boolean }[] {
+    const b = this.c.battle!;
+    const st = unitStats(this.c.colonists.find((x) => x.id === colonistId)!);
+    const out: { at: Vec; text: string; good: boolean }[] = [];
+    for (const k of liveCreatures(b)) {
+      if (k.burrowed) continue;
+      let best = -1;
+      for (const w of st.weapons) {
+        if (WEAPONS[w].area || targetProblem(this.c, colonistId, w, k.id, at)) continue;
+        best = Math.max(best, shotBreakdown(this.c, colonistId, w, k.id, 'torso', false, at).chance);
+      }
+      if (best < 0) continue;
+      const flanked = !adjacent(at, k.pos) && coverAgainst(this.c.map, k.pos, at) === 0;
+      out.push({ at: k.pos, text: `${best}%`, good: flanked });
+    }
+    return out;
   }
 
   /** What stops the current build tool acting on this tile, or null. */
@@ -1226,6 +1386,22 @@ export class App {
       const why = this.toolProblem(h);
       const placed = c.build?.placed.some((p) => p.kind !== 'repair' && samePos(p.pos, h));
       bits.push(placed ? '<div class="good">Placed this phase. Click to undo.</div>' : why ? `<div class="bad">${esc(why)}</div>` : '<div class="good">Click or drag to place.</div>');
+    }
+    if (this.mode === 'battle' && b && b.phase === 'player' && !this.busy && this.aim.kind === 'move' && this.selected) {
+      const u = b.units.find((q) => q.colonistId === this.selected);
+      if (u && !u.downed && u.actions > 0) {
+        const r = moveRange(c, u.colonistId);
+        const dash = r.dash.some((p) => samePos(p, h));
+        if (dash || r.walk.some((p) => samePos(p, h))) {
+          const left = u.actions - (dash ? 2 : 1);
+          const pv = this.previewFrom(u.colonistId, h);
+          const flanked = pv.filter((p) => p.good).length;
+          bits.push(`<b>${dash ? 'Dash here: both actions' : 'Move here: one action'}</b>`);
+          if (left <= 0) bits.push(`<div class="bad">No action left to shoot after this move${pv.length ? ` (${pv.length} enem${pv.length > 1 ? 'ies' : 'y'} would be in reach)` : ''}.</div>`);
+          else if (pv.length) bits.push(`<div class="good">From here: ${pv.length} enem${pv.length > 1 ? 'ies' : 'y'} in reach. Numbers show the body-shot chance${flanked ? '; yellow means flanked (no cover)' : ''}.</div>`);
+          else bits.push('<div class="muted">No enemy in reach from here.</div>');
+        }
+      }
     }
     const k = b && this.mode === 'battle' ? liveCreatures(b).find((q) => samePos(q.pos, h)) : null;
     if (k) {

@@ -58,7 +58,7 @@ kbd { font: 10px var(--mono); color: var(--muted); }
 #objective .meter > div { height: 100%; background: var(--colony); }
 
 /* ---------------------------------------------------------------- top right: hostiles + log */
-#hostiles { top: 12px; right: 100px; display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; max-width: 50vw; }
+#hostiles { top: 12px; right: 140px; display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; max-width: 50vw; }
 .hostile { width: 30px; height: 30px; border-radius: 50%; border: 2px solid var(--world-deep); background: rgba(40, 10, 26, 0.85); color: #f3c4df; font: 700 12px var(--mono); display: grid; place-items: center; cursor: pointer; }
 .hostile.targetable { border-color: var(--world); box-shadow: 0 0 0 2px rgba(208, 84, 154, 0.25); }
 .hostile.under { opacity: 0.5; border-style: dashed; cursor: default; }
@@ -206,3 +206,11 @@ kbd { font: 10px var(--mono); color: var(--muted); }
   #jobs, #intel { width: 240px; }
   .ab { width: 52px; height: 56px; }
 }
+
+.preview-label { position: absolute; left: 0; top: 0; white-space: nowrap; font: 700 12px var(--mono); padding: 1px 6px; background: rgba(40, 12, 24, 0.85); border: 1px solid var(--world); color: #ffd0e4; pointer-events: none; }
+.preview-label.good { border-color: var(--dash); color: #ffe7a8; }
+#setbtn { top: 12px; right: 96px; width: 34px; height: 34px; background: var(--panel); border: 1px solid var(--line); cursor: pointer; color: var(--muted); display: grid; place-items: center; }
+#setbtn:hover { color: var(--text); border-color: var(--line-strong); }
+.settings { display: grid; grid-template-columns: auto 1fr; gap: 10px 16px; align-items: center; margin: 10px 0; }
+.settings select { background: #0e1215; color: var(--text); border: 1px solid var(--line); padding: 4px; }
+.settings .note { grid-column: 1 / span 2; color: var(--muted); font-size: 12px; }

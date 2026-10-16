@@ -465,10 +465,14 @@ export function canTarget(c: Campaign, id: string, weapon: WeaponId, targetId: s
   return targetProblem(c, id, weapon, targetId) === null;
 }
 
-/** Why this colonist cannot shoot this creature with this weapon right now, or null if they can. */
-export function targetProblem(c: Campaign, id: string, weapon: WeaponId, targetId: string): string | null {
+/**
+ * Why this colonist cannot shoot this creature with this weapon right now, or null if they
+ * can. `from` asks the same question as if they stood somewhere else (for move previews).
+ */
+export function targetProblem(c: Campaign, id: string, weapon: WeaponId, targetId: string, from?: Vec): string | null {
   const b = battleOf(c);
   const u = unitOf(b, id);
+  const at = from ?? u.pos;
   const k = creatureOf(b, targetId);
   const w = WEAPONS[weapon];
   const col = colonistOf(c, id);
@@ -480,30 +484,31 @@ export function targetProblem(c: Campaign, id: string, weapon: WeaponId, targetI
   if (col.retired) return `${who} can no longer fight.`;
   if (!st.weapons.includes(weapon)) return `${who} cannot use the ${w.name.toLowerCase()}.`;
   if (w.area) return `The ${w.name.toLowerCase()} is aimed at a tile, not a creature.`;
-  if (w.melee) return adjacent(u.pos, k.pos) ? null : 'The knife only reaches a creature on a neighbouring tile.';
-  const d = dist(u.pos, k.pos);
+  if (w.melee) return adjacent(at, k.pos) ? null : 'The knife only reaches a creature on a neighbouring tile.';
+  const d = dist(at, k.pos);
   if (d > w.range) return `Out of range: it is ${Math.round(d)} tiles away and the ${w.name.toLowerCase()} reaches ${w.range}.`;
   if (d > st.sight) return `Too far for ${who} to see: ${st.sight} tiles with a lost eye.`;
-  if (!hasLos(c.map, u.pos, k.pos, st.sight)) return 'No line of sight: rock, a wall, a building, thorn or higher ground is in the way.';
+  if (!hasLos(c.map, at, k.pos, st.sight)) return 'No line of sight: rock, a wall, a building, thorn or higher ground is in the way.';
   return null;
 }
 
-export function shotBreakdown(c: Campaign, id: string, weapon: WeaponId, targetId: string, part: BodyPart, reaction = false): ShotBreakdown {
+export function shotBreakdown(c: Campaign, id: string, weapon: WeaponId, targetId: string, part: BodyPart, reaction = false, from?: Vec): ShotBreakdown {
   const b = battleOf(c);
   const u = unitOf(b, id);
+  const at = from ?? u.pos;
   const k = creatureOf(b, targetId);
   const w = WEAPONS[weapon];
   const st = unitStats(colonistOf(c, id));
-  const d = dist(u.pos, k.pos);
+  const d = dist(at, k.pos);
   const climbers = has(c, 'climbers');
   const parts: { label: string; value: number }[] = [{ label: 'Aim', value: st.aim }];
   const rm = Math.round(w.rangeMod(d));
   if (rm) parts.push({ label: `Range (${d.toFixed(1)})`, value: rm });
   if (PARTS[part].aim) parts.push({ label: PARTS[part].name, value: PARTS[part].aim });
-  const cover = w.melee ? 0 : coverAgainst(c.map, k.pos, u.pos, { ignoreElevation: climbers });
+  const cover = w.melee ? 0 : coverAgainst(c.map, k.pos, at, { ignoreElevation: climbers });
   if (cover === 1) parts.push({ label: 'Half cover', value: -20 });
   if (cover === 2) parts.push({ label: 'Full cover', value: -40 });
-  if (!climbers && tileAt(c.map, u.pos.x, u.pos.y).elevation > tileAt(c.map, k.pos.x, k.pos.y).elevation) {
+  if (!climbers && tileAt(c.map, at.x, at.y).elevation > tileAt(c.map, k.pos.x, k.pos.y).elevation) {
     parts.push({ label: 'Height', value: 10 });
   }
   if (part === 'legs' && has(c, 'leg_plates')) parts.push({ label: 'Leg plates', value: -15 });

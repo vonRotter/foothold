@@ -30,7 +30,9 @@ npm install
 npm run dev        # http://localhost:5173
 ```
 
-URL options:
+The game **saves itself** in your browser at every settled point (each build change, deployment, and the start of each of your turns). The title screen offers **Continue** after a reload. The **settings** menu (the sliders button, top right) sets animation speed, graphics quality and whether to use the Kenney models; graphics and models apply after a reload, which is safe because the campaign is saved first.
+
+URL options (they override the settings menu):
 
 | Option | Effect |
 |---|---|
@@ -65,7 +67,7 @@ npm run probe      # balance probe: 50 seeded campaigns with two scripted bots
 | F | Enemy turn speed |
 | Esc | Cancel |
 
-Each colonist has two actions per turn. Blue tiles cost one action and yellow tiles cost two. Shooting, throwing and overwatch end that colonist's turn, so move first, then shoot. Hovering a destination shows its cover: blue plates are full cover and yellow plates are half. Hovering an enemy shows the selected colonist's chance to hit it, or why they can't. A line above the ability bar always says what the selected colonist can do now, and any refused action says why.
+Each colonist has two actions per turn. Blue tiles cost one action and yellow tiles cost two. Shooting, throwing and overwatch end that colonist's turn, so move first, then shoot. Hovering a destination shows its cover: blue plates are full cover and yellow plates are half. Hovering an enemy shows the selected colonist's chance to hit it, or why they can't. Hovering a tile you could move to shows, above each enemy you could then shoot, your body-shot chance from there; a yellow number means that enemy would be flanked (no cover against you). A line above the ability bar always says what the selected colonist can do now, and any refused action says why.
 
 Red columns mark where waves will come in, with an arrow at the screen edge when the entry is out of view. The first wave is shown at deployment; each later wave one turn before it arrives.
 
@@ -79,6 +81,7 @@ src/sim/        The rules. No rendering code; deterministic from a seed.
   combat.ts       Player actions, waves, the enemy phase, overwatch; returns events
   mind.ts         The adaptation rule, intent and approach selection, dissection reports
   campaign.ts     Build phase, jobs, placement and undo, aftermath, scars, world growth
+  save.ts         Save files: a JSON snapshot of the campaign, versioned
 src/render/     three.js: terrain, water, units, overlays, picking, camera, event playback
   assets.ts       Loads the Kenney models, merges them for instancing, and applies the alien treatment
 src/ui/         HUD, icons, portraits, and the game-flow controller
