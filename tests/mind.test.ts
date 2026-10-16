@@ -61,11 +61,11 @@ describe('adaptation rule', () => {
 });
 
 describe('intent', () => {
-  it('goes for the pod first, then the newest building', () => {
+  it('goes for the habitat first, then the newest building', () => {
     const c = newCampaign(1);
-    expect(chooseIntent(c)).toMatchObject({ kind: 'building', buildingId: 'pod' });
+    expect(chooseIntent(c)).toMatchObject({ kind: 'building', buildingId: 'habitat' });
     c.history.push({ attack: 1, outcome: 'held', intent: chooseIntent(c), kills: 0, creatures: 0, downed: [], died: [], newScars: [], adaptation: null });
-    const lab = dropBuilding(c, 'lab', { x: 15, y: 19 });
+    const lab = dropBuilding(c, 'lab', { x: 18, y: 23 });
     expect(lab).not.toBeNull();
     c.attack = 2;
     const intent = chooseIntent(c);

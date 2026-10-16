@@ -294,7 +294,10 @@ Either way, the final screen is plain: who lived, who was taken, who died and wh
 - **§14.1 Decided:** visible hit percentages with honest rolls. Every shot shows its itemised modifiers before you take it, and the log prints the chance and the roll.
 - **§14.4 Decided:** hand-built map. Starting growth is fixed in the prototype; how growth spreads between attacks varies with the seed.
 - **§14.6 Decided:** the prototype is the map, four colonists, three attacks, two species (Grazers and Rootcrawlers), and the adaptation rule working.
-- §14.2, §14.3, and §14.5 remain open. The prototype uses 3 days between attacks, has no taken colonists, and never states the adaptation rule in the interface.
+- **§14.2 Decided, differently:** no days. The game starts in a build phase, and one follows every mission. Each colonist gets one job for the phase; builders supply build points that pay for walls and repairs; the player presses *Next mission* when done. This replaces the day-by-day assignments in §6.
+- **Waves (§7) Decided:** each mission has a fixed, visible arrival schedule. Waves never depend on kills; only the world's time adaptations shift them, and the shifted schedule is shown before the mission.
+- **Map (§4) Decided:** 48×48, with cliffs and height differences, a deep river with fords, and a build area in the middle of the map that the starting base only partly fills.
+- §14.3 and §14.5 remain open. The prototype has no taken colonists and never states the adaptation rule in the interface.
 
 1. **Hit chance: dice or visible fate?** Hidden dice with a 95% miss is XCOM's most hated feature, and this game's whole argument is about legibility. Options: visible hit percentages with honest rolls; a visible fate deck per colonist (the cards from the earlier brainstorm); or deterministic damage with only body-part hits being uncertain. **This decision changes the feel of every battle and should be made before anything is built.**
 2. **How long is the between-attack phase?** Too short and assignments don't matter; too long and the game becomes a management sim. Probably 3–5 days.

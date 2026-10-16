@@ -24,8 +24,8 @@ export interface RoleDef {
   weapons: WeaponId[];
   /** Charges per battle for limited weapons. */
   charges: Partial<Record<WeaponId, number>>;
-  /** Wall segments per day when assigned to Build. */
-  buildRate: number;
+  /** Build points this colonist adds to the phase when their job is Build. */
+  buildPoints: number;
   blurb: string;
 }
 
@@ -39,7 +39,7 @@ export const ROLES: Record<RoleId, RoleDef> = {
     mobility: 5,
     weapons: ['rifle', 'grenade', 'knife'],
     charges: { grenade: 1 },
-    buildRate: 1,
+    buildPoints: 3,
     blurb: 'The dependable standard.',
   },
   marksman: {
@@ -51,7 +51,7 @@ export const ROLES: Record<RoleId, RoleDef> = {
     mobility: 5,
     weapons: ['longrifle', 'pistol', 'knife'],
     charges: {},
-    buildRate: 1,
+    buildPoints: 3,
     blurb: 'Long range, poor up close.',
   },
   engineer: {
@@ -63,7 +63,7 @@ export const ROLES: Record<RoleId, RoleDef> = {
     mobility: 5,
     weapons: ['pistol', 'flamer', 'knife'],
     charges: { flamer: 2 },
-    buildRate: 2,
+    buildPoints: 6,
     blurb: 'Builds and repairs between attacks.',
   },
   xenobiologist: {
@@ -75,7 +75,7 @@ export const ROLES: Record<RoleId, RoleDef> = {
     mobility: 5,
     weapons: ['pistol', 'knife'],
     charges: {},
-    buildRate: 1,
+    buildPoints: 3,
     blurb: 'Dissects the dead and predicts the next adaptation.',
   },
 };
@@ -218,7 +218,7 @@ export interface BuildingDef {
 }
 
 export const BUILDINGS: Record<BuildingKind, BuildingDef> = {
-  pod: { kind: 'pod', name: 'Landing pod', size: 3, hp: 20, cost: 0, gives: 'Holds the ship\'s stores. If it falls, half of what is left goes with it.', needs: null },
+  habitat: { kind: 'habitat', name: 'Habitat module', size: 3, hp: 20, cost: 0, gives: 'Where everyone sleeps, and where the ship\'s stores are kept. If it falls, half of what is left goes with it.', needs: null },
   lab: { kind: 'lab', name: 'Xeno lab', size: 2, hp: 12, cost: 4, gives: 'A staffed lab produces a dissection report before the next attack.', needs: 'xenobiologist' },
   infirmary: { kind: 'infirmary', name: 'Infirmary', size: 2, hp: 12, cost: 3, gives: 'Heal restores full health; downed colonists bleed out one turn slower.', needs: null },
   workshop: { kind: 'workshop', name: 'Workshop', size: 2, hp: 12, cost: 3, gives: 'A staffed workshop lets anyone build full walls.', needs: 'engineer' },
@@ -292,9 +292,9 @@ export const ADAPTATIONS: AdaptationDef[] = [
     report: 'The hind muscles are swelling. They will close distance faster and hit harder when they do.', notice: 'It lunges further than it should.' },
   { id: 'mottled_skin', category: 'position', value: 'long', name: 'Mottled skin', effect: 'Shots from 10+ tiles -20 aim',
     report: 'The skin is mottling to match the ground. At distance they will be hard to pick out.', notice: 'It blurs into the ground at that distance.' },
-  { id: 'staggered', category: 'time', value: 'early', name: 'Staggered arrival', effect: 'They arrive in three waves instead of two',
+  { id: 'staggered', category: 'time', value: 'early', name: 'Staggered arrival', effect: 'Each wave after the first comes one turn later than the one before would have',
     report: 'The broods are hatching at different times. They will not all come at once.', notice: 'More are coming. They held back.' },
-  { id: 'surge', category: 'time', value: 'late', name: 'Surge', effect: 'All arrive at once with +2 move on the first two turns',
+  { id: 'surge', category: 'time', value: 'late', name: 'Surge', effect: 'Every wave after the first comes one turn sooner; +2 move on the first two turns',
     report: 'The broods are hatching together and hungry. They will come all at once, and fast.', notice: 'They are all coming at once.' },
 ];
 
@@ -313,13 +313,23 @@ export function adaptationDef(id: AdaptationId): AdaptationDef {
 // ---------------------------------------------------------------- campaign constants
 
 export const TOTAL_ATTACKS = 3;
-export const DAYS_BETWEEN = 3;
-export const START_STORES = 7;
+export const START_STORES = 10;
 export const BLEED_TURNS = 3;
-export const TURN_LIMIT = 14;
+/** Safety limit. Missions end when every scheduled wave has arrived and died. */
+export const TURN_LIMIT = 20;
 export const EARLY_TURNS = 3;
 export const OVERWATCH_PENALTY = 15;
 export const SIGHT = 15;
+
+/** Build-point and material costs for things placed between missions. */
+export const COSTS = {
+  lowwall: { bp: 1, material: 1 },
+  wall: { bp: 2, material: 2 },
+  clear: { bp: 1, material: 0 },
+  /** Per repair action; restores REPAIR_HP. */
+  repair: { bp: 1, material: 1 },
+} as const;
+export const REPAIR_HP = 4;
 
 /** Colonists in the prototype. A fixed mix of combat and support. */
 export const ROSTER: { id: string; name: string; role: RoleId }[] = [
@@ -329,9 +339,46 @@ export const ROSTER: { id: string; name: string; role: RoleId }[] = [
   { id: 'moreau', name: 'Paul Moreau', role: 'xenobiologist' },
 ];
 
-/** Creature counts per attack. The mind changes bodies, not numbers. */
-export const ATTACK_WAVES: Record<number, { species: SpeciesId; count: number }[]> = {
-  1: [{ species: 'grazer', count: 8 }],
-  2: [{ species: 'grazer', count: 7 }, { species: 'rootcrawler', count: 2 }],
-  3: [{ species: 'grazer', count: 7 }, { species: 'rootcrawler', count: 3 }],
+/**
+ * The fixed arrival schedule for each attack. Waves come on these turns whatever the
+ * player kills; only the time adaptations shift them, and the shifted schedule is shown
+ * before the attack starts. `from` picks the approach: the mind's first or second choice.
+ */
+export interface WaveDef {
+  turn: number;
+  from: 'first' | 'second';
+  creatures: { species: SpeciesId; count: number }[];
+}
+
+export const MISSIONS: Record<number, WaveDef[]> = {
+  1: [
+    { turn: 1, from: 'first', creatures: [{ species: 'grazer', count: 5 }] },
+    { turn: 3, from: 'second', creatures: [{ species: 'grazer', count: 3 }] },
+  ],
+  2: [
+    { turn: 1, from: 'first', creatures: [{ species: 'grazer', count: 4 }] },
+    { turn: 2, from: 'second', creatures: [{ species: 'rootcrawler', count: 2 }] },
+    { turn: 4, from: 'first', creatures: [{ species: 'grazer', count: 3 }] },
+  ],
+  3: [
+    { turn: 1, from: 'first', creatures: [{ species: 'grazer', count: 4 }] },
+    { turn: 2, from: 'second', creatures: [{ species: 'rootcrawler', count: 2 }] },
+    { turn: 4, from: 'first', creatures: [{ species: 'grazer', count: 3 }] },
+    { turn: 5, from: 'second', creatures: [{ species: 'rootcrawler', count: 1 }] },
+  ],
+};
+
+/** What came down with the first landing, around the habitat at the centre of the map. */
+export const STARTING_BASE: { habitat: { x: number; y: number }; structures: { x: number; y: number; kind: 'lowwall' | 'wall' | 'crate' }[] } = {
+  habitat: { x: 23, y: 23 },
+  structures: [
+    // A short wall line on the north side, facing the ravine.
+    { x: 22, y: 20, kind: 'wall' }, { x: 23, y: 20, kind: 'wall' }, { x: 24, y: 20, kind: 'lowwall' }, { x: 25, y: 20, kind: 'lowwall' },
+    // Sandbag-style low walls toward the river on the west.
+    { x: 20, y: 23, kind: 'lowwall' }, { x: 20, y: 24, kind: 'lowwall' }, { x: 20, y: 25, kind: 'lowwall' },
+    // A barrier toward the ramp on the east.
+    { x: 28, y: 22, kind: 'lowwall' }, { x: 28, y: 23, kind: 'wall' },
+    // Cargo from the drop.
+    { x: 26, y: 27, kind: 'crate' }, { x: 27, y: 27, kind: 'crate' }, { x: 21, y: 27, kind: 'crate' }, { x: 26, y: 19, kind: 'crate' },
+  ],
 };

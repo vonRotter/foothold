@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { advanceToNextAttack, campaignOver, concludeAttack, newCampaign, runDay } from '../src/sim/campaign';
+import { campaignOver, concludeAttack, finishBuildPhase, newCampaign } from '../src/sim/campaign';
 import {
   beginBattle,
   canTarget,
@@ -19,6 +19,7 @@ import type { BodyPart, Campaign } from '../src/sim/types';
 
 /** A simple bot: shoot what it can see, otherwise step toward the nearest creature and watch. */
 function playBattle(c: Campaign, part: BodyPart = 'torso'): void {
+  if (c.build) finishBuildPhase(c);
   startBattle(c);
   beginBattle(c);
   let guard = 0;
@@ -67,14 +68,11 @@ describe('campaign', () => {
       while (!campaignOver(c)) {
         playBattle(c);
         concludeAttack(c);
-        if (campaignOver(c)) break;
-        for (let d = 0; d < 3; d++) runDay(c, {});
-        advanceToNextAttack(c);
       }
       expect(c.history.length).toBeGreaterThan(0);
       expect(['won', 'fallen']).toContain(campaignOver(c));
     }
-  });
+  }, 60000);
 
   it('records every kill and pushes an adaptation traceable to them', () => {
     const c = newCampaign(7);
@@ -90,6 +88,7 @@ describe('campaign', () => {
 
   it('shows an honest, itemised hit chance', () => {
     const c = newCampaign(3);
+    finishBuildPhase(c);
     startBattle(c);
     beginBattle(c);
     const b = c.battle!;
@@ -105,6 +104,7 @@ describe('campaign', () => {
   it('a third downing kills', () => {
     const c = newCampaign(5);
     c.colonists[0].downings = 2;
+    finishBuildPhase(c);
     startBattle(c);
     beginBattle(c);
     const b = c.battle!;

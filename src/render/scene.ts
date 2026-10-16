@@ -6,6 +6,8 @@ import type { Building, Campaign, Creature, Vec } from '../sim/types';
 import { PAL } from './palette';
 
 const ELEV = 0.55; // world height per elevation level
+const WATER_LEVEL = -0.14;
+const FORD_LEVEL = -0.06;
 
 export interface OverlaySpec {
   walk?: Vec[];
@@ -14,7 +16,13 @@ export interface OverlaySpec {
   area?: Vec[];
   areaValid?: boolean;
   footprint?: { tiles: Vec[]; valid: boolean };
-  marks?: Vec[]; // build / clear selections
+  marks?: Vec[]; // things placed this build phase
+  /** Outline of the colony's build and deploy area. */
+  outline?: { x0: number; y0: number; x1: number; y1: number };
+  /** Tile under the cursor coloured by whether the current tool can act there. */
+  preview?: { tiles: Vec[]; valid: boolean };
+  /** Where the next wave will come from, once known. */
+  incoming?: Vec[];
   path?: Vec[];
   hover?: Vec | null;
   selected?: Vec | null;
@@ -52,7 +60,8 @@ export class Scene3D {
   private timer = new THREE.Timer();
 
   // Camera rig.
-  private target = new THREE.Vector3(20, 0, 22);
+  private target = new THREE.Vector3(24, 0, 26);
+  private mapW = 48;
   private yaw = 0;
   private yawGoal = 0;
   private distance = 27;
@@ -88,19 +97,19 @@ export class Scene3D {
 
     this.camera = new THREE.PerspectiveCamera(38, 1, 0.1, 300);
     this.scene.background = new THREE.Color(PAL.sky);
-    this.scene.fog = new THREE.Fog(PAL.fog, 45, 95);
+    this.scene.fog = new THREE.Fog(PAL.fog, 55, 110);
 
     const hemi = new THREE.HemisphereLight(0xcfd8e0, 0x3a3328, 1.1);
     this.scene.add(hemi);
     const sun = new THREE.DirectionalLight(0xfff1dc, 2.0);
     sun.position.set(8, 30, -6);
-    sun.target.position.set(20, 0, 20);
+    sun.target.position.set(24, 0, 24);
     sun.castShadow = true;
     sun.shadow.mapSize.set(2048, 2048);
     const sc = sun.shadow.camera;
-    sc.left = -32; sc.right = 32; sc.top = 32; sc.bottom = -32; sc.near = 1; sc.far = 80;
+    sc.left = -38; sc.right = 38; sc.top = 38; sc.bottom = -38; sc.near = 1; sc.far = 90;
     sun.shadow.bias = -0.0008;
-    sun.position.add(new THREE.Vector3(20, 0, 20));
+    sun.position.add(new THREE.Vector3(24, 0, 24));
     this.scene.add(sun, sun.target);
 
     this.scene.add(this.terrain, this.overlay, this.fx);
@@ -151,8 +160,8 @@ export class Scene3D {
     const fwd = new THREE.Vector3(-Math.sin(this.yaw), 0, -Math.cos(this.yaw));
     const rgt = new THREE.Vector3(Math.cos(this.yaw), 0, -Math.sin(this.yaw));
     this.target.addScaledVector(rgt, right).addScaledVector(fwd, -forward);
-    this.target.x = THREE.MathUtils.clamp(this.target.x, 0, 39);
-    this.target.z = THREE.MathUtils.clamp(this.target.z, 0, 39);
+    this.target.x = THREE.MathUtils.clamp(this.target.x, 0, this.mapW - 1);
+    this.target.z = THREE.MathUtils.clamp(this.target.z, 0, this.mapW - 1);
   }
 
   focus(p: Vec) {
@@ -234,7 +243,10 @@ export class Scene3D {
 
   height(c: Campaign, p: Vec): number {
     if (!inBounds(c.map, p.x, p.y)) return 0;
-    return tileAt(c.map, p.x, p.y).elevation * ELEV;
+    const t = tileAt(c.map, p.x, p.y);
+    if (t.base === 'water') return WATER_LEVEL;
+    if (t.base === 'ford') return FORD_LEVEL;
+    return t.elevation * ELEV;
   }
 
   world(c: Campaign, p: Vec, lift = 0): THREE.Vector3 {
@@ -253,7 +265,7 @@ export class Scene3D {
       let o: THREE.Object3D | null = h.object;
       while (o && !o.userData.tile) o = o.parent;
       if (o?.userData.tile) return { ...(o.userData.tile as Vec) };
-      if (h.object === this.tileMesh && h.instanceId !== undefined) return { x: h.instanceId % 40, y: Math.floor(h.instanceId / 40) };
+      if (h.object === this.tileMesh && h.instanceId !== undefined) return { x: h.instanceId % this.mapW, y: Math.floor(h.instanceId / this.mapW) };
     }
     return null;
   }
@@ -269,6 +281,7 @@ export class Scene3D {
       });
     }
     const map = c.map;
+    this.mapW = map.w;
     const n = map.w * map.h;
     const box = new THREE.BoxGeometry(1, 1, 1);
     const tileMat = new THREE.MeshStandardMaterial({ roughness: 0.95, metalness: 0 });
@@ -281,21 +294,54 @@ export class Scene3D {
     const rocks: THREE.Matrix4[] = [];
     const thorns: THREE.Matrix4[][] = [[], [], []];
     const rubble: THREE.Matrix4[] = [];
+    const water: THREE.Matrix4[] = [];
+    const shallows: THREE.Matrix4[] = [];
+    const crates: THREE.Matrix4[] = [];
+    let padMin = { x: Infinity, y: Infinity };
+    let padMax = { x: -Infinity, y: -Infinity };
+    const lowerBy = (x: number, y: number, e: number) =>
+      inBounds(map, x, y) ? e - (tileAt(map, x, y).base === 'water' ? -1 : tileAt(map, x, y).elevation) : 0;
     for (let y = 0; y < map.h; y++) {
       for (let x = 0; x < map.w; x++) {
         const i = y * map.w + x;
         const t = tileAt(map, x, y);
-        const top = t.elevation * ELEV;
-        const h = top + 0.3;
+        const top = t.base === 'water' ? -0.5 : t.base === 'ford' ? -0.2 : t.elevation * ELEV;
+        const h = top + 0.6;
         m4.makeScale(1, h, 1).setPosition(x, top - h / 2, y);
         tiles.setMatrixAt(i, m4);
         const r = hash(i);
-        if (t.burned) col.setHex(PAL.burned);
+        if (t.base === 'water' || t.base === 'ford') col.setHex(PAL.riverbed);
+        else if (t.burned) col.setHex(PAL.burned);
         else if (t.base === 'sand') col.setHex(PAL.sand);
         else if (t.base === 'pad') col.setHex(PAL.pad);
-        else col.setHex(t.elevation === 2 ? PAL.groundTop : t.elevation === 1 ? PAL.groundHigh : PAL.ground);
+        else col.setHex([PAL.ground, PAL.groundHigh, PAL.groundTop, PAL.groundPeak][t.elevation] ?? PAL.groundPeak);
         if (t.base !== 'pad') col.offsetHSL(0, 0, (r - 0.5) * 0.04);
+        // Cliff edges read darker, like exposed stone.
+        const drop = Math.max(lowerBy(x + 1, y, t.elevation), lowerBy(x - 1, y, t.elevation), lowerBy(x, y + 1, t.elevation), lowerBy(x, y - 1, t.elevation));
+        if (drop >= 2 && t.base !== 'water' && t.base !== 'ford') col.lerp(new THREE.Color(PAL.cliff), 0.45);
         tiles.setColorAt(i, col);
+        if (t.base === 'water') water.push(new THREE.Matrix4().setPosition(x, WATER_LEVEL, y));
+        if (t.base === 'ford') shallows.push(new THREE.Matrix4().setPosition(x, FORD_LEVEL, y));
+        if (t.base === 'pad') {
+          padMin = { x: Math.min(padMin.x, x), y: Math.min(padMin.y, y) };
+          padMax = { x: Math.max(padMax.x, x), y: Math.max(padMax.y, y) };
+        }
+        // Scree at the foot of cliffs: rounded stones, the world's shapes.
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          if (lowerBy(x + dx, y + dy, t.elevation) < 2 || tileAt(map, x + dx, y + dy).base === 'water') continue;
+          if (hash(i * 7 + dx * 3 + dy) > 0.55) continue;
+          const lt = tileAt(map, x + dx, y + dy);
+          if (lt.base === 'rock' || lt.base === 'tree' || lt.buildingId || lt.structure) continue;
+          const s = 0.25 + hash(i + dx * 13 + dy * 17) * 0.25;
+          rocks.push(new THREE.Matrix4().compose(
+            new THREE.Vector3(x + dx * 0.42, lt.elevation * ELEV + s * 0.4, y + dy * 0.42),
+            new THREE.Quaternion().setFromEuler(new THREE.Euler(r * 3, hash(i + dx) * 6, 0)),
+            new THREE.Vector3(s * 1.3, s, s * 1.1),
+          ));
+        }
+        if (t.structure?.kind === 'crate') {
+          crates.push(new THREE.Matrix4().compose(new THREE.Vector3(x, top + 0.3, y), new THREE.Quaternion().setFromEuler(new THREE.Euler(0, (Math.floor(r * 4) * Math.PI) / 2, 0)), new THREE.Vector3(0.8, 0.6, 0.6)));
+        }
 
         if (t.base === 'tree') {
           const s = 0.75 + r * 0.4;
@@ -323,22 +369,19 @@ export class Scene3D {
     this.tileMesh = tiles;
     this.terrain.add(tiles);
 
-    // Landing pad lines: straight, human.
-    const padLines = new THREE.LineSegments(
-      (() => {
-        const g = new THREE.BufferGeometry();
-        const pts: number[] = [];
-        for (let i = 0; i <= 5; i++) {
-          pts.push(17.5 + i, 0.012, 17.5, 17.5 + i, 0.012, 22.5);
-          pts.push(17.5, 0.012, 17.5 + i, 22.5, 0.012, 17.5 + i);
-        }
-        g.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
-        return g;
-      })(),
-      new THREE.LineBasicMaterial({ color: PAL.padLine, transparent: true, opacity: 0.5 }),
-    );
-    this.terrain.add(padLines);
-
+    // Landing apron grid: straight, human.
+    if (padMin.x !== Infinity) {
+      const g = new THREE.BufferGeometry();
+      const pts: number[] = [];
+      for (let x = padMin.x; x <= padMax.x + 1; x++) pts.push(x - 0.5, 0.012, padMin.y - 0.5, x - 0.5, 0.012, padMax.y + 0.5);
+      for (let y = padMin.y; y <= padMax.y + 1; y++) pts.push(padMin.x - 0.5, 0.012, y - 0.5, padMax.x + 0.5, 0.012, y - 0.5);
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+      this.terrain.add(new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: PAL.padLine, transparent: true, opacity: 0.45 })));
+    }
+    const surface = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
+    this.addInstanced(surface, new THREE.MeshStandardMaterial({ color: PAL.water, roughness: 0.15, metalness: 0.1, transparent: true, opacity: 0.82 }), water, false);
+    this.addInstanced(surface, new THREE.MeshStandardMaterial({ color: PAL.ford, roughness: 0.2, transparent: true, opacity: 0.6 }), shallows, false);
+    this.addInstanced(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ color: PAL.crate, roughness: 0.6 }), crates);
     this.addInstanced(new THREE.IcosahedronGeometry(0.55, 1), new THREE.MeshStandardMaterial({ color: PAL.canopy, roughness: 0.9, flatShading: true }), trees);
     this.addInstanced(new THREE.CylinderGeometry(0.07, 0.11, 0.6, 6), new THREE.MeshStandardMaterial({ color: PAL.trunk, roughness: 1 }), trunks);
     this.addInstanced(new THREE.DodecahedronGeometry(0.6, 1), new THREE.MeshStandardMaterial({ color: PAL.rock, roughness: 1, flatShading: true }), rocks);
@@ -350,14 +393,14 @@ export class Scene3D {
     for (let y = 0; y < map.h; y++) {
       for (let x = 0; x < map.w; x++) {
         const t = tileAt(map, x, y);
-        if (!t.structure) continue;
+        if (!t.structure || t.structure.kind === 'crate') continue;
         const top = t.elevation * ELEV;
         const tall = t.structure.kind === 'wall' ? 1.15 : 0.5;
         const overgrown = t.structure.overgrowth >= 2;
         const mat = new THREE.MeshStandardMaterial({ color: overgrown ? PAL.wallOvergrown : PAL.wall, roughness: 0.8 });
         // Join to neighbouring walls so lines read as lines.
-        const wx = this.hasStructure(c, x - 1, y) || this.hasStructure(c, x + 1, y);
-        const wz = this.hasStructure(c, x, y - 1) || this.hasStructure(c, x, y + 1);
+        const wx = this.hasWall(c, x - 1, y) || this.hasWall(c, x + 1, y);
+        const wz = this.hasWall(c, x, y - 1) || this.hasWall(c, x, y + 1);
         const sx = wx || !wz ? 1 : 0.3;
         const sz = wz || !wx ? 1 : 0.3;
         const mesh = new THREE.Mesh(new THREE.BoxGeometry(wx && !wz ? 1 : sx, tall, wz && !wx ? 1 : sz), mat);
@@ -378,15 +421,16 @@ export class Scene3D {
     for (const b of c.buildings) if (!b.destroyed) this.terrain.add(buildingMesh(c, b));
   }
 
-  private hasStructure(c: Campaign, x: number, y: number): boolean {
-    return inBounds(c.map, x, y) && !!tileAt(c.map, x, y).structure;
+  private hasWall(c: Campaign, x: number, y: number): boolean {
+    const st = inBounds(c.map, x, y) ? tileAt(c.map, x, y).structure : null;
+    return !!st && st.kind !== 'crate';
   }
 
-  private addInstanced(geo: THREE.BufferGeometry, mat: THREE.Material, mats: THREE.Matrix4[]) {
+  private addInstanced(geo: THREE.BufferGeometry, mat: THREE.Material, mats: THREE.Matrix4[], shadows = true) {
     if (!mats.length) return;
     const m = new THREE.InstancedMesh(geo, mat, mats.length);
     mats.forEach((x, i) => m.setMatrixAt(i, x));
-    m.castShadow = true;
+    m.castShadow = shadows;
     m.receiveShadow = true;
     this.terrain.add(m);
   }
@@ -541,7 +585,20 @@ export class Scene3D {
     addTiles(o.walk, PAL.walk, 0.32);
     addTiles(o.area, o.areaValid === false ? PAL.retired : PAL.danger, 0.4, 0.05);
     if (o.footprint) addTiles(o.footprint.tiles, o.footprint.valid ? PAL.zone : PAL.danger, 0.5, 0.05);
-    addTiles(o.marks, PAL.buildingTrim, 0.55, 0.05);
+    addTiles(o.marks, PAL.buildingTrim, 0.35, 0.05);
+    if (o.preview) addTiles(o.preview.tiles, o.preview.valid ? PAL.zone : PAL.danger, 0.55, 0.06);
+    addTiles(o.incoming, PAL.danger, 0.3, 0.04);
+    if (o.outline) {
+      const { x0, y0, x1, y1 } = o.outline;
+      const pts = [
+        new THREE.Vector3(x0 - 0.5, 0.06, y0 - 0.5), new THREE.Vector3(x1 + 0.5, 0.06, y0 - 0.5),
+        new THREE.Vector3(x1 + 0.5, 0.06, y1 + 0.5), new THREE.Vector3(x0 - 0.5, 0.06, y1 + 0.5), new THREE.Vector3(x0 - 0.5, 0.06, y0 - 0.5),
+      ];
+      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineDashedMaterial({ color: PAL.walk, dashSize: 0.5, gapSize: 0.25, depthTest: false }));
+      line.computeLineDistances();
+      line.renderOrder = 4;
+      this.overlay.add(line);
+    }
 
     const square = (p: Vec, color: number, size: number, lift: number) => {
       const s = size / 2;
@@ -785,7 +842,7 @@ function buildingMesh(c: Campaign, b: Building): THREE.Group {
   const trim = new THREE.MeshStandardMaterial({ color: PAL.buildingTrim, roughness: 0.6 });
   const dark = new THREE.MeshStandardMaterial({ color: PAL.buildingDark, roughness: 0.6 });
   const s = b.size - 0.15;
-  const h = b.kind === 'pod' ? 1.8 : 1.3;
+  const h = b.kind === 'habitat' ? 1.6 : 1.3;
   const box = (w: number, hh: number, d: number, m: THREE.Material, x: number, y: number, z: number) => {
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, hh, d), m);
     mesh.position.set(x, y, z);
@@ -799,10 +856,16 @@ function buildingMesh(c: Campaign, b: Building): THREE.Group {
   box(s + 0.02, 0.12, s + 0.02, trim, 0, h * 0.62, 0);
   box(0.4, 0.7, 0.05, dark, 0, 0.35, s / 2 + 0.01);
   switch (b.kind) {
-    case 'pod':
-      for (const [x, z] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) box(0.3, 0.5, 0.3, dark, x * (s / 2), 0.25, z * (s / 2));
-      box(0.5, 1.1, 0.5, body, 0, h + 0.6, 0);
-      box(0.08, 0.8, 0.08, trim, 0, h + 1.5, 0);
+    case 'habitat':
+      // A long module with a window band, an airlock, a mast and solar panels.
+      box(s + 0.04, 0.16, s + 0.04, dark, 0, h * 0.8, 0);
+      box(0.9, 0.9, 0.5, body, 0, 0.45, s / 2 + 0.25);
+      box(0.5, 0.65, 0.05, dark, 0, 0.33, s / 2 + 0.51);
+      box(0.08, 1.4, 0.08, trim, s / 2 - 0.3, h + 0.7, -s / 2 + 0.3);
+      for (const z of [-0.6, 0.6]) {
+        const panel = box(1.1, 0.04, 0.7, dark, -s / 2 - 0.05, h + 0.35, z);
+        panel.rotation.z = 0.35;
+      }
       break;
     case 'lab':
       box(0.9, 0.35, 0.9, dark, 0.25, h + 0.25, -0.25);

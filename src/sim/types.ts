@@ -7,8 +7,9 @@ export interface Vec {
 
 // ---------------------------------------------------------------- map
 
-export type Base = 'ground' | 'sand' | 'rock' | 'tree' | 'pad';
-export type StructureKind = 'lowwall' | 'wall';
+export type Base = 'ground' | 'sand' | 'rock' | 'tree' | 'pad' | 'water' | 'ford';
+/** Walls are built by the colony; crates came down with the landing and act like low walls. */
+export type StructureKind = 'lowwall' | 'wall' | 'crate';
 export type CoverLevel = 0 | 1 | 2; // none, half, full
 
 export interface Structure {
@@ -19,7 +20,7 @@ export interface Structure {
 
 export interface Tile {
   base: Base;
-  elevation: number; // 0..2
+  elevation: number; // 0..3; a step of 2 or more is a cliff
   structure: Structure | null;
   buildingId: string | null;
   /** Thorn mat grown by the world. Half cover, blocks sight, slows colonists. */
@@ -37,7 +38,7 @@ export interface GameMap {
   approaches: Approach[];
 }
 
-export type ApproachId = 'ravine' | 'ridge' | 'forest' | 'riverbed';
+export type ApproachId = 'ravine' | 'ridge' | 'forest' | 'ford';
 
 export interface Approach {
   id: ApproachId;
@@ -48,7 +49,7 @@ export interface Approach {
 
 // ---------------------------------------------------------------- buildings
 
-export type BuildingKind = 'pod' | 'lab' | 'infirmary' | 'workshop';
+export type BuildingKind = 'habitat' | 'lab' | 'infirmary' | 'workshop';
 
 export interface Building {
   id: string;
@@ -58,7 +59,7 @@ export interface Building {
   hp: number;
   maxHp: number;
   destroyed: boolean;
-  /** Attack number after which it was dropped (0 = on landing). */
+  /** Number of attacks fought before it was dropped (0 = before the first attack, or on landing). */
   droppedAfter: number;
 }
 
@@ -147,7 +148,7 @@ export interface Creature {
   /** Enemy turns left blinded. A blind creature wanders and only strikes what is next to it. */
   blinded: number;
   burning: { turns: number; source: KillSource } | null;
-  /** Turn on which it arrives (for staggered waves). */
+  /** Turn on which its wave arrives. */
   arrivesOn: number;
   arrived: boolean;
   alive: boolean;
@@ -184,11 +185,41 @@ export interface Battle {
   /** Colonists on the map when the attack began. */
   startCount: number;
   creatures: Creature[];
+  /** The fixed arrival schedule for this attack. Shown to the player; never depends on kills. */
+  waves: Wave[];
   kills: KillRecord[];
   outcome: null | 'held' | 'intent_reached' | 'fallen' | 'withdrew';
   log: string[];
   /** Adaptations the player has already seen in action this campaign (for one-time battle notices). */
   noticed: AdaptationId[];
+}
+
+export interface Wave {
+  turn: number;
+  approach: ApproachId;
+  creatureIds: string[];
+  arrived: boolean;
+}
+
+// ---------------------------------------------------------------- between attacks
+
+export type Job =
+  | { kind: 'rest' }
+  | { kind: 'build' }
+  | { kind: 'heal' }
+  | { kind: 'staff'; buildingId: string }
+  | { kind: 'train'; role: RoleId };
+
+/** Something placed this build phase, kept so it can be undone until the next mission starts. */
+export type Placement =
+  | { kind: 'wall'; pos: Vec; wall: StructureKind; bp: number; salvage: number; stores: number; replaced: StructureKind | null }
+  | { kind: 'clear'; pos: Vec; bp: number }
+  | { kind: 'repair'; buildingId: string; hp: number; bp: number; salvage: number; stores: number };
+
+export interface BuildPhase {
+  jobs: Record<string, Job>;
+  spent: number;
+  placed: Placement[];
 }
 
 export interface Campaign {
@@ -205,8 +236,8 @@ export interface Campaign {
   kills: KillRecord[];
   battle: Battle | null;
   nextIntent: Intent | null;
-  /** True once the xeno lab has been staffed by a xenobiologist since the last attack. */
-  reportReady: boolean;
+  /** Set while the colony is building between missions (and before the first). */
+  build: BuildPhase | null;
   history: AttackSummary[];
   /** How many tiles the world grew after each attack (for the aftermath screen). */
   lastGrowth: number;

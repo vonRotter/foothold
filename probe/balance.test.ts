@@ -1,7 +1,7 @@
 // Balance probe: plays many seeded campaigns with two simple bots and prints outcomes.
 // Not part of `npm test`. Run with `npm run probe`.
 import { it } from 'vitest';
-import { advanceToNextAttack, campaignOver, concludeAttack, newCampaign, runDay, type Assignment } from '../src/sim/campaign';
+import { campaignOver, concludeAttack, finishBuildPhase, newCampaign, repairBuilding } from '../src/sim/campaign';
 import {
   beginBattle,
   canDeployAt,
@@ -83,7 +83,7 @@ function turns(c: Campaign, act: (colonistId: string) => void) {
   }
 }
 
-function run(name: string, bot: (c: Campaign) => void, between: (c: Campaign) => Record<string, Assignment>) {
+function run(name: string, bot: (c: Campaign) => void, between: (c: Campaign) => void) {
   const outcomes: Record<number, Record<string, number>> = { 1: {}, 2: {}, 3: {} };
   const adaptations: Record<string, number> = {};
   let dead = 0;
@@ -91,13 +91,12 @@ function run(name: string, bot: (c: Campaign) => void, between: (c: Campaign) =>
   for (let s = 1; s <= SEEDS; s++) {
     const c = newCampaign(s);
     while (!campaignOver(c)) {
+      between(c);
+      finishBuildPhase(c);
       bot(c);
       const sm = concludeAttack(c);
       outcomes[sm.attack][sm.outcome] = (outcomes[sm.attack][sm.outcome] ?? 0) + 1;
       if (sm.adaptation) adaptations[`${sm.attack}:${sm.adaptation.id}`] = (adaptations[`${sm.attack}:${sm.adaptation.id}`] ?? 0) + 1;
-      if (campaignOver(c)) break;
-      for (let d = 0; d < 3; d++) runDay(c, between(c));
-      advanceToNextAttack(c);
     }
     dead += c.colonists.filter((x) => x.status === 'dead').length;
     if (campaignOver(c) === 'fallen') fell += 1;
@@ -109,8 +108,8 @@ function run(name: string, bot: (c: Campaign) => void, between: (c: Campaign) =>
 }
 
 it('balance', () => {
-  run('stationary, torso only, rests between attacks', stationary, () => ({}));
-  run('guards the target, best shot, repairs the pod', guard, (c) =>
-    Object.fromEntries(c.colonists.map((x) => [x.id, { kind: 'repair', buildingId: 'pod' } as Assignment])),
-  );
+  run('stationary, torso only, builds nothing', stationary, () => {});
+  run('guards the target, best shot, repairs the habitat', guard, (c) => {
+    while (repairBuilding(c, 'habitat') === null);
+  });
 });

@@ -128,15 +128,15 @@ function defenceScore(c: Campaign, b: Building): number {
 export function chooseIntent(c: Campaign): Intent {
   const standing = c.buildings.filter((b) => !b.destroyed);
   const alive = c.colonists.filter((x) => x.status === 'active');
-  const pod = standing.find((b) => b.kind === 'pod');
+  const habitat = standing.find((b) => b.kind === 'habitat');
 
-  if (c.attack === 1 && pod) {
-    return { kind: 'building', buildingId: pod.id, reason: 'The landing pod is the only thing here.' };
+  if (c.attack === 1 && habitat) {
+    return { kind: 'building', buildingId: habitat.id, reason: 'The habitat is the first thing that came down. It has been watching it since.' };
   }
   if (alive.length <= Math.ceil(c.colonists.length / 2)) {
     return { kind: 'colonists', reason: `Only ${alive.length} of you are left. It is coming for the people.` };
   }
-  const newest = standing.filter((b) => b.droppedAfter === c.attack - 1 && b.kind !== 'pod');
+  const newest = standing.filter((b) => b.droppedAfter === c.attack - 1 && b.kind !== 'habitat');
   if (newest.length) {
     const b = newest[newest.length - 1];
     return { kind: 'building', buildingId: b.id, reason: `It noticed the ${BUILDINGS[b.kind].name.toLowerCase()}. It is the newest thing you put down.` };

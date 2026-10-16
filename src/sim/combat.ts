@@ -12,7 +12,8 @@ import {
   TURN_LIMIT,
   WEAPONS,
   adaptationDef,
-  ATTACK_WAVES,
+  MISSIONS,
+  type WaveDef,
 } from './data';
 import { chooseIntent, goalTiles, rankApproaches } from './mind';
 import {
@@ -30,7 +31,7 @@ import {
   tileAt,
   touchesBuilding,
 } from './map';
-import { canStand, destinations, pathTo, reach, type MoveOpts } from './path';
+import { canStand, destinations, pathTo, reach, stepCost, type MoveOpts } from './path';
 import { int, pick, rollPct } from './rng';
 import type {
   AdaptationId,
@@ -44,6 +45,7 @@ import type {
   PositionBucket,
   UnitState,
   Vec,
+  Wave,
   WeaponId,
 } from './types';
 
@@ -213,30 +215,35 @@ export function startBattle(c: Campaign): Battle {
     });
   });
 
-  // Creatures. The mind decides bodies and timing, not numbers.
-  const waves = ATTACK_WAVES[c.attack] ?? ATTACK_WAVES[3];
+  // Creatures, wave by wave on a fixed schedule. The mind decides bodies, not numbers.
   const creatures: Creature[] = [];
+  const waves: Wave[] = [];
   let n = 0;
-  for (const w of waves) {
-    for (let i = 0; i < w.count; i++) {
-      const def = SPECIES[w.species];
-      creatures.push({
-        id: `${w.species}-${c.attack}-${n++}`,
-        species: w.species,
-        pos: { x: -1, y: -1 },
-        hp: def.hp,
-        maxHp: def.hp,
-        burrowed: def.burrows,
-        slowed: false,
-        blinded: 0,
-        burning: null,
-        arrivesOn: 1,
-        arrived: false,
-        alive: true,
-      });
+  for (const w of waveSchedule(c)) {
+    const ids: string[] = [];
+    for (const group of w.creatures) {
+      for (let i = 0; i < group.count; i++) {
+        const def = SPECIES[group.species];
+        const id = `${group.species}-${c.attack}-${n++}`;
+        ids.push(id);
+        creatures.push({
+          id,
+          species: group.species,
+          pos: { x: -1, y: -1 },
+          hp: def.hp,
+          maxHp: def.hp,
+          burrowed: def.burrows,
+          slowed: false,
+          blinded: 0,
+          burning: null,
+          arrivesOn: w.turn,
+          arrived: false,
+          alive: true,
+        });
+      }
     }
+    waves.push({ turn: w.turn, approach: w.from === 'first' ? approach : secondApproach, creatureIds: ids, arrived: false });
   }
-  assignArrivals(c, creatures);
 
   const b: Battle = {
     attack: c.attack,
@@ -248,6 +255,7 @@ export function startBattle(c: Campaign): Battle {
     units,
     startCount: units.length,
     creatures,
+    waves,
     kills: [],
     outcome: null,
     log: [],
@@ -257,16 +265,18 @@ export function startBattle(c: Campaign): Battle {
   return b;
 }
 
-/** Wave timing. Default: two waves (turns 1 and 3). Adaptations change it. */
-function assignArrivals(c: Campaign, creatures: Creature[]) {
-  const total = creatures.length;
-  creatures.forEach((k, i) => {
-    if (has(c, 'surge')) k.arrivesOn = 1;
-    else if (has(c, 'staggered')) k.arrivesOn = i < Math.ceil(total * 0.4) ? 1 : i < Math.ceil(total * 0.7) ? 3 : 5;
-    else k.arrivesOn = i < Math.ceil(total * 0.6) ? 1 : 3;
+/**
+ * This attack's arrival schedule. Fixed per attack; the time adaptations shift it, and
+ * the result is shown to the player before the attack starts. Kills never change it.
+ */
+export function waveSchedule(c: Campaign, attack = c.attack): WaveDef[] {
+  const base = MISSIONS[attack] ?? MISSIONS[3];
+  return base.map((w, i) => {
+    let turn = w.turn;
+    if (i > 0 && has(c, 'staggered')) turn += i;
+    if (i > 0 && has(c, 'surge')) turn = Math.max(1, turn - 1);
+    return { ...w, turn };
   });
-  // Burrowers come up a turn behind the first wave at the earliest.
-  for (const k of creatures) if (SPECIES[k.species].burrows) k.arrivesOn = Math.max(k.arrivesOn, 2);
 }
 
 export function canDeployAt(c: Campaign, p: Vec, ignoreId?: string): boolean {
@@ -303,29 +313,37 @@ function approachName(c: Campaign, id: string): string {
 export function buildingName(c: Campaign, id: string): string {
   const b = c.buildings.find((x) => x.id === id);
   if (!b) return id;
-  return { pod: 'the landing pod', lab: 'the xeno lab', infirmary: 'the infirmary', workshop: 'the workshop' }[b.kind];
+  return { habitat: 'the habitat', lab: 'the xeno lab', infirmary: 'the infirmary', workshop: 'the workshop' }[b.kind];
 }
 
 function arrivals(c: Campaign, out: Out) {
   const b = battleOf(c);
-  const due = b.creatures.filter((k) => k.alive && !k.arrived && k.arrivesOn <= b.turn);
-  if (!due.length) return;
-  for (const k of due) {
-    // The first wave comes the short way; later waves and burrowers from the second approach.
-    const apId = k.arrivesOn === 1 ? b.approach : b.secondApproach;
-    const ap = c.map.approaches.find((a) => a.id === apId)!;
-    const spot = freeTileNear(c, ap.entry, k.burrowed);
-    if (!spot) continue; // try again next turn
-    k.pos = spot;
-    k.arrived = true;
-    out.push({ t: 'arrive', id: k.id, at: { ...spot } });
-  }
-  const n = due.filter((k) => k.arrived).length;
-  if (n && b.turn > 1) {
-    if (has(c, 'staggered')) notice(c, out, 'staggered');
-    out.log(`${n} more at ${approachName(c, b.secondApproach)}.`, 'world');
+  for (const w of b.waves) {
+    if (w.arrived || w.turn > b.turn) continue;
+    const ap = c.map.approaches.find((a) => a.id === w.approach)!;
+    let placed = 0;
+    for (const id of w.creatureIds) {
+      const k = creatureOf(b, id);
+      if (k.arrived || !k.alive) continue;
+      const spot = freeTileNear(c, ap.entry, k.burrowed);
+      if (!spot) continue; // the entry is crowded: try again next turn
+      k.pos = spot;
+      k.arrived = true;
+      placed += 1;
+      out.push({ t: 'arrive', id: k.id, at: { ...spot } });
+    }
+    w.arrived = w.creatureIds.every((id) => creatureOf(b, id).arrived);
+    if (placed && b.turn > 1) {
+      if (has(c, 'staggered')) notice(c, out, 'staggered');
+      out.log(`Wave: ${placed} more from ${approachName(c, w.approach)}.`, 'world');
+    }
   }
   if (b.turn === 1 && has(c, 'surge')) notice(c, out, 'surge');
+}
+
+/** The next wave still to come, if any. */
+export function nextWave(b: Battle): Wave | null {
+  return b.waves.find((w) => !w.arrived) ?? null;
 }
 
 function freeTileNear(c: Campaign, entry: Vec[], burrowed: boolean): Vec | null {
@@ -903,7 +921,7 @@ function gnaw(c: Campaign, out: Out, k: Creature, bld: Building) {
     out.push({ t: 'destroyed', building: bld.id });
     out.push({ t: 'terrain' });
     out.log(`${capitalise(buildingName(c, bld.id))} is destroyed.`, 'world');
-    if (bld.kind === 'pod' && c.stores > 0) {
+    if (bld.kind === 'habitat' && c.stores > 0) {
       const lost = Math.ceil(c.stores / 2);
       c.stores -= lost;
       out.log(`Half the ship's stores go with it: ${lost} lost.`, 'world');
@@ -951,9 +969,7 @@ function walk(c: Campaign, out: Out, k: Creature, path: Vec[], budget: number, o
   for (let i = 1; i < path.length; i++) {
     const a = path[i - 1];
     const n = path[i];
-    const diag = a.x !== n.x && a.y !== n.y;
-    const climb = Math.abs(tileAt(c.map, n.x, n.y).elevation - tileAt(c.map, a.x, a.y).elevation);
-    spent += (diag ? 1.5 : 1) + (climb && !opts.climbers ? 1 : 0) + (tileAt(c.map, n.x, n.y).structure?.kind === 'lowwall' ? 1 : 0);
+    spent += stepCost(c.map, a, n, opts);
     if (spent > budget) break;
     if (canStand(c.map, n) && !opts.occupied.has(key(n))) stopAt = i;
   }
@@ -1066,7 +1082,7 @@ function checkEnd(c: Campaign, out: Out): boolean {
     const lost = b.startCount - b.units.filter((u) => !u.downed).length;
     if (lost > 0 && lost >= Math.ceil(b.startCount / 2)) return finish(c, out, 'intent_reached');
   }
-  const pending = b.creatures.some((k) => k.alive && !k.arrived);
+  const pending = b.waves.some((w) => !w.arrived);
   if (!pending && liveCreatures(b).length === 0) return finish(c, out, 'held');
   return false;
 }
