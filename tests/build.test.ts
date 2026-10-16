@@ -12,7 +12,7 @@ import {
   undoAt,
   undoLast,
 } from '../src/sim/campaign';
-import { beginBattle, endTurn, startBattle, waveSchedule } from '../src/sim/combat';
+import { beginBattle, endTurn, moveProblem, moveRange, startBattle, targetProblem, waveRevealed, waveSchedule } from '../src/sim/combat';
 import { tileAt } from '../src/sim/map';
 
 describe('build phase', () => {
@@ -92,5 +92,61 @@ describe('waves', () => {
     const plain = waveSchedule(c).map((w) => w.turn);
     c.adaptations.push({ id: 'staggered', category: 'time', value: 'early', after: 1 });
     expect(waveSchedule(c).map((w) => w.turn)).toEqual(plain.map((t, i) => t + i));
+  });
+});
+
+describe('explanations', () => {
+  it('says why a move is refused, and allows a reachable one', () => {
+    const c = newCampaign(4);
+    finishBuildPhase(c);
+    startBattle(c);
+    beginBattle(c);
+    const b = c.battle!;
+    const u = b.units[0];
+    const far = { x: u.pos.x, y: Math.min(47, u.pos.y + 15) };
+    expect(moveProblem(c, u.colonistId, far)).toMatch(/Out of reach/);
+    expect(moveProblem(c, u.colonistId, u.pos)).toMatch(/already there/);
+    const r = moveRange(c, u.colonistId);
+    expect(moveProblem(c, u.colonistId, r.walk[0])).toBeNull();
+    u.actions = 0;
+    expect(moveProblem(c, u.colonistId, r.walk[0])).toMatch(/no actions left/);
+  });
+
+  it('says why a creature cannot be shot', () => {
+    const c = newCampaign(4);
+    finishBuildPhase(c);
+    startBattle(c);
+    beginBattle(c);
+    const b = c.battle!;
+    const u = b.units.find((x) => x.colonistId === 'okafor')!;
+    const k = b.creatures.find((x) => x.arrived && !x.burrowed)!;
+    k.pos = { x: u.pos.x, y: u.pos.y - 16 };
+    expect(targetProblem(c, 'okafor', 'rifle', k.id)).toMatch(/Out of range: it is 16 tiles away and the rifle reaches 14/);
+    k.burrowed = true;
+    expect(targetProblem(c, 'okafor', 'rifle', k.id)).toMatch(/underground/);
+  });
+
+  it('reveals the first wave at deployment and later waves one turn ahead', () => {
+    const c = newCampaign(4);
+    finishBuildPhase(c);
+    startBattle(c);
+    const b = c.battle!;
+    expect(waveRevealed(b, b.waves[0])).toBe(true);
+    expect(waveRevealed(b, b.waves[1])).toBe(false); // mission 1's second wave is on turn 3
+    b.turn = 2;
+    expect(waveRevealed(b, b.waves[1])).toBe(true);
+  });
+
+  it('the long rifle can use its whole range', () => {
+    const c = newCampaign(4);
+    finishBuildPhase(c);
+    startBattle(c);
+    beginBattle(c);
+    const b = c.battle!;
+    const u = b.units.find((x) => x.colonistId === 'lindqvist')!;
+    u.pos = { x: 30, y: 26 };
+    const k = b.creatures.find((x) => x.arrived && !x.burrowed)!;
+    k.pos = { x: 30, y: 43 }; // 17 tiles south, open ground and the river between
+    expect(targetProblem(c, 'lindqvist', 'longrifle', k.id)).toBeNull();
   });
 });

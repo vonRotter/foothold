@@ -52,7 +52,8 @@ npm run probe      # balance probe: 50 seeded campaigns with two scripted bots
 
 | Input | Action |
 |---|---|
-| Left click | Select, move, target, place. Drag to paint walls or clear thorn. |
+| Left click | Select, move, target, place. Drag to paint walls or clear thorn. Clicking open ground always moves the selected colonist, even while a weapon is chosen. |
+| Right click | Move there (and stop aiming) |
 | Right or middle drag · WASD · arrows | Pan |
 | Q / E · wheel | Rotate the camera 90° · zoom |
 | 1–9 | Abilities in battle, tools in the build phase, body parts when aiming |
@@ -60,10 +61,13 @@ npm run probe      # balance probe: 50 seeded campaigns with two scripted bots
 | Space | End turn |
 | Z | Undo the last placement (build phase) |
 | L | Open or close the log |
+| H or ? | How to play (also shown before your first deployment) |
 | F | Enemy turn speed |
 | Esc | Cancel |
 
-Blue tiles cost one action and yellow tiles cost two. Hovering a destination shows its cover: blue plates are full cover and yellow plates are half.
+Each colonist has two actions per turn. Blue tiles cost one action and yellow tiles cost two. Shooting, throwing and overwatch end that colonist's turn, so move first, then shoot. Hovering a destination shows its cover: blue plates are full cover and yellow plates are half. Hovering an enemy shows the selected colonist's chance to hit it, or why they can't. A line above the ability bar always says what the selected colonist can do now, and any refused action says why.
+
+Red columns mark where waves will come in, with an arrow at the screen edge when the entry is out of view. The first wave is shown at deployment; each later wave one turn before it arrives.
 
 ## Code layout
 

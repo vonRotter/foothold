@@ -319,7 +319,8 @@ export const BLEED_TURNS = 3;
 export const TURN_LIMIT = 20;
 export const EARLY_TURNS = 3;
 export const OVERWATCH_PENALTY = 15;
-export const SIGHT = 15;
+/** How far colonists see, in tiles. At least the longest weapon's range, so range is never wasted. */
+export const SIGHT = 18;
 
 /** Build-point and material costs for things placed between missions. */
 export const COSTS = {

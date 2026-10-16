@@ -63,6 +63,10 @@ export class Scene3D {
   // Camera rig.
   private target = new THREE.Vector3(24, 0, 26);
   private mapW = 48;
+  /** Where the camera is gliding to. `focus` sets it; the frame loop eases toward it. */
+  private goal = new THREE.Vector3(24, 0, 26);
+  private markers = new THREE.Group();
+  private markerLabels: { el: HTMLDivElement; pos: THREE.Vector3 }[] = [];
   private yaw = 0;
   private yawGoal = 0;
   private distance = 27;
@@ -115,7 +119,7 @@ export class Scene3D {
     sun.position.add(new THREE.Vector3(24, 0, 24));
     this.scene.add(sun, sun.target);
 
-    this.scene.add(this.terrain, this.overlay, this.fx);
+    this.scene.add(this.terrain, this.overlay, this.fx, this.markers);
     window.addEventListener('resize', () => this.resize());
     window.addEventListener('keydown', (e) => {
       if ((e.target as HTMLElement)?.tagName === 'SELECT') return;
@@ -165,10 +169,20 @@ export class Scene3D {
     this.target.addScaledVector(rgt, right).addScaledVector(fwd, -forward);
     this.target.x = THREE.MathUtils.clamp(this.target.x, 0, this.mapW - 1);
     this.target.z = THREE.MathUtils.clamp(this.target.z, 0, this.mapW - 1);
+    // Panning by hand cancels any glide in progress.
+    this.goal.copy(this.target);
   }
 
-  focus(p: Vec) {
-    this.target.set(p.x, 0, p.y);
+  /** Glide the camera to a tile. `snap` jumps there at once. */
+  focus(p: Vec, snap = false) {
+    this.goal.set(p.x, 0, p.y);
+    if (snap || this.instant) this.target.copy(this.goal);
+  }
+
+  /** Is this point comfortably inside the view (not at the very edge)? */
+  onScreen(v: THREE.Vector3, margin = 0.75): boolean {
+    const p = v.clone().project(this.camera);
+    return p.z < 1 && Math.abs(p.x) < margin && Math.abs(p.y) < margin;
   }
 
   /** Screen position of a tile's top surface, in client pixels. Used by the browser smoke test. */
@@ -208,6 +222,7 @@ export class Scene3D {
       Math.sin(this.pitch),
       Math.cos(this.yaw) * Math.cos(this.pitch),
     ).multiplyScalar(this.distance);
+    this.target.lerp(this.goal, Math.min(1, dt * 5));
     this.camera.position.copy(this.target).add(off);
     this.camera.lookAt(this.target);
 
@@ -607,7 +622,76 @@ export class Scene3D {
     }
   }
 
+  /**
+   * Show where waves will come from: a red column at each entry, and a label that slides
+   * to the screen edge (with an arrow) when the entry is out of view.
+   */
+  setWaveMarkers(c: Campaign, list: { at: Vec; label: string; imminent: boolean }[]) {
+    for (const ch of [...this.markers.children]) {
+      this.markers.remove(ch);
+      (ch as THREE.Mesh).geometry?.dispose();
+    }
+    for (const l of this.markerLabels) l.el.remove();
+    this.markerLabels = [];
+    for (const m of list) {
+      const base = this.world(c, m.at);
+      const color = m.imminent ? PAL.danger : 0xd07a3a;
+      const column = new THREE.Mesh(
+        new THREE.BoxGeometry(0.9, 7, 0.9),
+        new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.22, depthWrite: false }),
+      );
+      column.position.copy(base).add(new THREE.Vector3(0, 3.5, 0));
+      column.userData.pulse = true;
+      this.markers.add(column);
+      const ring = new THREE.LineSegments(
+        new THREE.EdgesGeometry(new THREE.BoxGeometry(3, 0.02, 3)),
+        new THREE.LineBasicMaterial({ color, depthTest: false }),
+      );
+      ring.position.copy(base).add(new THREE.Vector3(0, 0.08, 0));
+      ring.renderOrder = 8;
+      this.markers.add(ring);
+      const el = document.createElement('div');
+      el.className = `wave-label${m.imminent ? ' imminent' : ''}`;
+      el.innerHTML = `<span class="arrow">▲</span><span class="txt">${m.label}</span>`;
+      this.labelLayer.appendChild(el);
+      this.markerLabels.push({ el, pos: base.clone().add(new THREE.Vector3(0, 2.2, 0)) });
+    }
+  }
+
+  private updateMarkers() {
+    const w = this.renderer.domElement.clientWidth;
+    const h = this.renderer.domElement.clientHeight;
+    for (const ch of this.markers.children) {
+      if (ch.userData.pulse) ((ch as THREE.Mesh).material as THREE.MeshBasicMaterial).opacity = 0.16 + 0.1 * Math.sin(this.time * 4);
+    }
+    for (const m of this.markerLabels) {
+      const p = m.pos.clone().project(this.camera);
+      const behind = p.z > 1;
+      let x = behind ? -p.x : p.x;
+      let y = behind ? -p.y : p.y;
+      const inside = !behind && Math.abs(x) < 0.92 && Math.abs(y) < 0.86;
+      const arrow = m.el.querySelector<HTMLElement>('.arrow')!;
+      if (inside) {
+        arrow.style.display = 'none';
+      } else {
+        // Clamp to the screen edge and point toward the entry.
+        const k = Math.max(Math.abs(x) / 0.9, Math.abs(y) / 0.8, 1);
+        x /= k;
+        y /= k;
+        arrow.style.display = '';
+        arrow.style.transform = `rotate(${Math.atan2(x, y)}rad)`;
+      }
+      // Keep the whole label on screen, not just its centre.
+      const lw = m.el.offsetWidth / 2 + 8;
+      const lh = m.el.offsetHeight / 2 + 8;
+      const px = THREE.MathUtils.clamp(((x + 1) / 2) * w, lw, w - lw);
+      const py = THREE.MathUtils.clamp(((1 - y) / 2) * h, lh + 50, h - lh - 120);
+      m.el.style.transform = `translate(${px}px, ${py}px) translate(-50%, -50%)`;
+    }
+  }
+
   private updateLabels(dt: number) {
+    this.updateMarkers();
     const w = this.renderer.domElement.clientWidth;
     const h = this.renderer.domElement.clientHeight;
     const v = new THREE.Vector3();
@@ -733,11 +817,20 @@ export class Scene3D {
         case 'move': {
           const g = this.units.get(e.id);
           if (!g) break;
+          const end = e.path[e.path.length - 1];
+          if (g.userData.kind === 'colonist') {
+            // Follow your own people.
+            this.focus(end);
+          } else if (!this.onScreen(this.world(c, e.path[0])) || !this.onScreen(this.world(c, end))) {
+            // Show the world's moves that would otherwise happen off-screen.
+            this.focus(end);
+            await this.wait(0.35);
+          }
           for (let i = 1; i < e.path.length; i++) {
             const a = this.world(c, e.path[i - 1]);
             const b = this.world(c, e.path[i]);
-            const ang = Math.atan2(b.x - a.x, b.z - a.z);
-            if (g.userData.kind === 'creature') g.rotation.y = ang;
+            // Everyone faces where they walk.
+            g.rotation.y = Math.atan2(b.x - a.x, b.z - a.z);
             await this.tween(0.09, (k) => {
               g.position.lerpVectors(a, b, k);
               g.position.y += Math.sin(k * Math.PI) * 0.08;
@@ -773,6 +866,12 @@ export class Scene3D {
           const from = this.units.get(e.from);
           const to = this.units.get(e.to);
           if (!from || !to) break;
+          // Turn to face what you are attacking.
+          from.rotation.y = Math.atan2(to.position.x - from.position.x, to.position.z - from.position.z);
+          if (!this.onScreen(to.position)) {
+            this.focus({ x: (from.position.x + to.position.x) / 2, y: (from.position.z + to.position.z) / 2 });
+            await this.wait(0.3);
+          }
           const a = from.position.clone().add(new THREE.Vector3(0, 0.75, 0));
           const b = to.position.clone().add(new THREE.Vector3(0, 0.45, 0));
           if (!e.hit) b.add(new THREE.Vector3((Math.random() - 0.5) * 1.2, 0.3, (Math.random() - 0.5) * 1.2));

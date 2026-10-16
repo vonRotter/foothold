@@ -71,6 +71,7 @@ The description says losing means "what did they reach". The prototype makes tha
 ## 2. Combat
 
 - **Turns:** two actions per colonist. Moving within mobility costs 1 action, and dashing to double mobility costs 2. Shooting, throwing, and overwatch end the colonist's turn. Stabilising a downed ally costs 1 action.
+- **Sight:** colonists see 18 tiles (14 with a lost eye), as far as the long rifle reaches. It was 15 in the first build, which silently cut the long rifle's range.
 - **Hit chance (§14.1, decided):** visible percentages with honest rolls. The target panel lists every modifier. The log prints the chance and the roll, and a hit means roll < chance (0–99).
 
 ```
@@ -151,7 +152,7 @@ Each attack is one mission. Before it, a briefing shows what the world is coming
 | 2 | 1: 4 Grazers (first) · 2: 2 Rootcrawlers (second) · 4: 3 Grazers (first) |
 | 3 | 1: 4 Grazers (first) · 2: 2 Rootcrawlers (second) · 4: 3 Grazers (first) · 5: 1 Rootcrawler (second) |
 
-"First" and "second" are the mind's two shortest approaches to its target. Waves arrive on their turn whatever the player kills; the approach is only revealed when they appear. During the mission the objective box shows the next wave's turn and size. A mission ends when every wave has arrived and every creature is dead, when the intent is reached, or when no colonist is standing. A 20-turn limit (they withdraw) exists only as a safety net.
+"First" and "second" are the mind's two shortest approaches to its target. Waves arrive on their turn whatever the player kills. **Where they come from** is shown on the map as a red column at the entry, with an arrow at the screen edge when it is out of view: the first wave's approach at deployment, every later wave's one turn before it arrives. (Showing every approach from the start would remove the reason for the signal mast in the full game; showing none made deployment guesswork.) During the mission the objective box shows the next wave's turn and size. A mission ends when every wave has arrived and every creature is dead, when the intent is reached, or when no colonist is standing. A 20-turn limit (they withdraw) exists only as a safety net.
 
 ### 3.3 The build phase
 
@@ -209,7 +210,7 @@ Human things are boxes and right angles: walls, buildings, crates, colonists, ru
 
 Models come from four Kenney packs (CC0; see `CREDITS.md`), chosen to keep the two languages apart. The colony's buildings, walls and guns come from the Space, Space Station and Blaster kits: boxy, recoloured into the colony's greys and orange. The world's rocks, cliff faces, trees, mushrooms and plants come from the Nature Kit with an "alien treatment" applied in code: purple, teal and crimson canopies, bone-pale or near-black trunks, smoothed surfaces, bent and twisted silhouettes, and a slow sway. Crates stay generated boxes, because the kits' containers are round. If a model fails to load, its primitive stand-in is drawn instead.
 
-The HUD follows XCOM's layout so the map stays visible: an objective box top-left (target and its HP, turn, next wave), hostile markers top-right (click to aim), a three-line event feed that fades, the squad and the selected colonist bottom-left, abilities or build tools bottom-centre with number keys, and the commit button (End turn, Next mission, Start mission) bottom-right. The full log is a drawer (L).
+The HUD follows XCOM's layout so the map stays visible: an objective box top-left (target and its HP, turn, next wave), hostile markers top-right (click to aim), a three-line event feed that fades, the squad and the selected colonist bottom-left, abilities or build tools bottom-centre with number keys, and the commit button (End turn, Next mission, Start mission) bottom-right. The full log is a drawer (L). A context line above the ability bar always says what the selected colonist can do right now; every refused action (a move out of reach, a shot out of range or sight, an action with none left) says why; hovering an enemy shows the hit chance or the reason there is none. Clicking open ground always moves, even with a weapon chosen; right-click also moves. A how-to-play screen (H) opens before the first deployment.
 
 ---
 
@@ -219,10 +220,10 @@ Measured with `npm run probe` over 50 seeded campaigns with two scripted bots, a
 
 | Bot | Mission 1 held | Mission 2 held | Mission 3 held | Colonists dead per campaign |
 |---|---|---|---|---|
-| Stands still, shoots torso, builds nothing | 42 / 50 | 15 / 50 | 0 / 50 | 0.70 |
-| Guards the target, best shot, repairs the habitat | 50 / 50 | 40 / 50 | 19 / 50 | 0.76 (colony never fell) |
+| Stands still, shoots torso, builds nothing | 42 / 50 | 15 / 50 | 0 / 50 | 0.72 |
+| Guards the target, best shot, repairs the habitat | 50 / 50 | 38 / 50 | 19 / 50 | 0.88 (colony never fell) |
 
-"Held" includes missions that hit the 20-turn safety limit. For the guarding bot that is common (13 in mission 1, 24 in mission 2). The cause is the bot, not the creatures: a Grazer behind the starting wall gnaws the habitat 1 HP per turn out of the bot's sight while the bot keeps repairing.
+"Held" includes missions that hit the 20-turn safety limit. For the guarding bot that is common (13 in mission 1, 22 in mission 2). The cause is the bot, not the creatures: a Grazer behind the starting wall gnaws the habitat 1 HP per turn out of the bot's sight while the bot keeps repairing.
 
 What the numbers show:
 

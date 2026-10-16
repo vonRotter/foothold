@@ -33,6 +33,7 @@ import {
   endTurn,
   fire,
   liveCreatures,
+  moveProblem,
   moveRange,
   moveUnit,
   nextWave,
@@ -40,8 +41,10 @@ import {
   shotBreakdown,
   stabilize,
   startBattle,
+  targetProblem,
   throwArea,
   unitStats,
+  waveRevealed,
   waveSchedule,
   type BattleEvent,
 } from '../sim/combat';
@@ -101,6 +104,17 @@ export class App {
       this.lastPainted = null;
     });
     canvas.addEventListener('click', (e) => this.onClick(e));
+    // Right-click without dragging: move there (and drop any aiming), as in many tactics games.
+    let rdown: { x: number; y: number } | null = null;
+    canvas.addEventListener('pointerdown', (e) => {
+      if (e.button === 2) rdown = { x: e.clientX, y: e.clientY };
+    });
+    canvas.addEventListener('pointerup', (e) => {
+      if (e.button !== 2 || !rdown) return;
+      const moved = Math.hypot(e.clientX - rdown.x, e.clientY - rdown.y);
+      rdown = null;
+      if (moved < 6) this.onRightClick(e);
+    });
     canvas.addEventListener('pointerleave', () => {
       this.hover = null;
       $('tooltip').hidden = true;
@@ -109,6 +123,8 @@ export class App {
     window.addEventListener('keydown', (e) => this.onKey(e));
     $('logbtn').innerHTML = icon('log', 18);
     $('logbtn').onclick = () => this.toggleLog();
+    $('helpbtn').textContent = '?';
+    $('helpbtn').onclick = () => this.showHelp();
   }
 
   start(seed: number) {
@@ -192,6 +208,12 @@ export class App {
     this.logRule(`Mission ${b.attack} of ${this.c.totalAttacks}`);
     this.feed('Everyone is on the map. Choose where each of them stands.');
     this.renderAll();
+    const first = b.waves[0];
+    if (first) {
+      const ap = this.c.map.approaches.find((a) => a.id === first.approach)!;
+      this.feed(`The first wave will come from ${ap.name}.`, 'world');
+    }
+    if (!this.helpSeen()) this.showHelp();
   }
 
   async startMission() {
@@ -208,6 +230,10 @@ export class App {
     await this.scene.play(this.c, events, (e) => {
       if (e.t === 'log') this.feed(e.text, e.tone ?? 'neutral');
       if (e.t === 'phase') this.logRule(e.phase === 'enemy' ? `Turn ${e.turn} · the world moves` : `Turn ${e.turn}`);
+      if (e.t === 'phase' || e.t === 'arrive') {
+        this.updateWaveMarkers();
+        this.renderHint();
+      }
       this.scene.refreshLabels(this.c);
       this.renderObjective();
       this.renderHostiles();
@@ -221,7 +247,11 @@ export class App {
       return;
     }
     const sel = this.selected ? b.units.find((u) => u.colonistId === this.selected) : null;
-    if (!sel || sel.downed || sel.actions === 0) this.selectNext();
+    if (!sel || sel.downed || sel.actions === 0) {
+      this.selectNext();
+      const u = b.units.find((x) => x.colonistId === this.selected);
+      if (u) this.scene.focus(u.pos);
+    }
     this.aim = { kind: 'move' };
     this.renderAll();
   }
@@ -294,6 +324,7 @@ export class App {
     if ((e.target as HTMLElement)?.tagName === 'SELECT') return;
     const k = e.key.toLowerCase();
     if (k === 'l') return this.toggleLog();
+    if (k === 'h' || k === '?') return this.showHelp();
     if (k === 'escape') {
       this.target = null;
       this.aim = { kind: 'move' };
@@ -384,10 +415,40 @@ export class App {
 
   private onClick(e: MouseEvent) {
     const t = this.scene.pickTile(e.clientX, e.clientY);
-    if (!t || this.busy) return;
+    if (!t) return;
+    if (this.busy || (this.mode === 'battle' && this.c.battle?.phase !== 'player')) {
+      if (this.mode === 'battle') this.toast('Wait: the world is moving. Your turn comes when it is done.');
+      return;
+    }
     if (this.mode === 'deploy') return this.clickDeploy(t);
     if (this.mode === 'battle') return this.clickBattle(t);
     if (this.mode === 'build') return this.clickBuild(t);
+  }
+
+  private onRightClick(e: MouseEvent) {
+    if (this.mode !== 'battle') return;
+    this.aim = { kind: 'move' };
+    this.target = null;
+    const t = this.scene.pickTile(e.clientX, e.clientY);
+    if (!t) return this.renderAll();
+    const b = this.c.battle!;
+    const creature = liveCreatures(b).find((k) => samePos(k.pos, t) && !k.burrowed);
+    if (creature) return this.openTarget(creature.id);
+    this.tryMove(t);
+  }
+
+  /** Move the selected colonist, or say exactly why not. */
+  private tryMove(t: Vec) {
+    if (this.busy) return this.toast('Wait: the world is moving. Your turn comes when it is done.');
+    if (!this.selected) return this.toast('Select a colonist first: click them, or press Tab.');
+    const why = moveProblem(this.c, this.selected, t);
+    if (why) {
+      this.toast(why);
+      this.renderAll();
+      return;
+    }
+    this.target = null;
+    void this.run(moveUnit(this.c, this.selected, t));
   }
 
   private clickBuild(t: Vec) {
@@ -442,7 +503,12 @@ export class App {
     const creature = liveCreatures(b).find((k) => samePos(k.pos, t) && !k.burrowed);
     if (this.aim.kind === 'throw' && this.selected) {
       if (canThrow(this.c, this.selected, this.aim.weapon, t)) void this.run(throwArea(this.c, this.selected, this.aim.weapon, t));
-      else this.toast('Out of range or out of sight.');
+      else {
+        const w = WEAPONS[this.aim.weapon];
+        const u = b.units.find((x) => x.colonistId === this.selected)!;
+        const d = Math.hypot(t.x - u.pos.x, t.y - u.pos.y);
+        this.toast(d > w.range ? `Too far: the ${w.name.toLowerCase()} reaches ${w.range} tiles. Esc or right-click to stop aiming.` : `No line of sight to that tile. Esc or right-click to stop aiming.`);
+      }
       return;
     }
     if (creature) return this.openTarget(creature.id);
@@ -454,10 +520,9 @@ export class App {
       this.select(unit.colonistId);
       return;
     }
-    if (this.selected && this.aim.kind === 'move') {
-      this.target = null;
-      void this.run(moveUnit(this.c, this.selected, t));
-    }
+    // Clicking open ground always means "go there", even while a weapon is chosen.
+    this.aim = { kind: 'move' };
+    this.tryMove(t);
   }
 
   private openTarget(creatureId: string) {
@@ -469,7 +534,11 @@ export class App {
     const u = b.units.find((x) => x.colonistId === this.selected)!;
     if (u.actions < 1) return this.toast('No actions left.');
     const weapons = this.weaponsFor(creatureId);
-    if (!weapons.length) return this.toast('No shot: out of range or out of sight.');
+    if (!weapons.length) {
+      const st = unitStats(this.c.colonists.find((x) => x.id === this.selected)!);
+      const main = st.weapons.find((w) => !WEAPONS[w].area && !WEAPONS[w].melee) ?? st.weapons[0];
+      return this.toast(main ? `No shot. ${targetProblem(this.c, this.selected, main, creatureId)}` : 'This colonist has no weapon they can use.');
+    }
     this.target = creatureId;
     this.targetWeapon = this.aim.kind === 'aim' && weapons.includes(this.aim.weapon) ? this.aim.weapon : weapons[0];
     this.renderAll();
@@ -488,6 +557,98 @@ export class App {
     this.tool = this.tool === t ? null : t;
     this.renderBar();
     this.updateOverlay();
+  }
+
+  showHelp() {
+    // Never cover another dialog (a briefing or a confirmation); H works again once it is closed.
+    if (!$('modal').hidden) return;
+    this.modal(`
+      <div class="kicker">How to play</div>
+      <h2>One turn, step by step</h2>
+      <div class="help">
+        <div><h4>Your turn</h4><p>Each colonist has <b>two actions</b> (the blue pips). Moving to a <b>blue</b> tile costs one; a <b>yellow</b> tile costs both. <b>Shooting, throwing and overwatch end that colonist's turn</b>, so move first, then shoot.</p></div>
+        <div><h4>Moving</h4><p>Select a colonist (click them or <span class="k">Tab</span>), then click or right-click a blue or yellow tile. The line shows the path. The plates around the tile show its cover: blue is full, yellow is half.</p></div>
+        <div><h4>Shooting</h4><p>Enemies you can hit have a <b>red frame</b>. Click one (or press <span class="k">1</span>), then pick a body part with <span class="k">1</span>–<span class="k">4</span>. The number is the real chance. Hover over an enemy to see your chance, or why you can't shoot it: usually range or line of sight.</p></div>
+        <div><h4>Overwatch</h4><p><span class="k">O</span>: the colonist waits and shoots the first creature that moves into sight during the world's turn. Good when nothing is in range yet.</p></div>
+        <div><h4>Waves</h4><p>Red columns mark where waves will come in, with an arrow at the screen edge when they are out of view. You see the first wave when you deploy, and every later wave one turn before it arrives.</p></div>
+        <div><h4>Ending a turn</h4><p><span class="k">Space</span> ends your turn; the world then moves and attacks. The objective box (top left) shows the turn and the next wave.</p></div>
+        <div><h4>Camera</h4><p><span class="k">WASD</span> or right-drag to pan, <span class="k">Q</span>/<span class="k">E</span> to rotate, the wheel to zoom.</p></div>
+        <div><h4>Keys</h4><p><span class="k">Esc</span> cancel · <span class="k">L</span> log · <span class="k">F</span> enemy speed · <span class="k">H</span> this help</p></div>
+      </div>
+      <div class="actions"><button class="btn primary" data-act="ok">Got it</button></div>
+    `, { ok: () => this.closeModal() });
+    try {
+      localStorage.setItem('foothold.helpSeen', '1');
+    } catch {
+      // Storage can be unavailable; the help is still reachable with H.
+    }
+  }
+
+  private helpSeen(): boolean {
+    try {
+      return localStorage.getItem('foothold.helpSeen') === '1';
+    } catch {
+      return true;
+    }
+  }
+
+  /** One line above the ability bar saying what the player can do right now. */
+  private renderHint() {
+    const el = $('hint');
+    const b = this.c?.battle;
+    let html = '';
+    if (this.mode === 'deploy') {
+      html = 'Click a colonist, then a tile inside the dashed line. The <b>red column</b> marks where the first wave comes in. Then <b>Start mission</b>.';
+    } else if (this.mode === 'battle' && b) {
+      const u = b.units.find((x) => x.colonistId === this.selected);
+      const col = this.c.colonists.find((x) => x.id === this.selected);
+      const who = col?.name.split(' ')[0] ?? '';
+      if (this.busy || b.phase !== 'player') html = 'The world is moving…';
+      else if (this.target) html = 'Pick a body part: click it or press <b>1</b>–<b>4</b>. <b>Esc</b> to cancel.';
+      else if (this.aim.kind === 'throw') html = `Click a tile within ${WEAPONS[this.aim.weapon].range} tiles to throw. <b>Esc</b> or right-click to cancel.`;
+      else if (!u || !col) html = 'Select a colonist: click them or press <b>Tab</b>.';
+      else if (u.downed) html = `${who} is down. A colonist standing next to them can <b>stabilise</b> them.`;
+      else if (u.actions === 0) html = `${who} is done this turn. <b>Tab</b> for the next colonist, <b>Space</b> to end the turn.`;
+      else {
+        const shootable = liveCreatures(b).some((k) => !k.burrowed && this.weaponsFor(k.id).length);
+        const nearest = liveCreatures(b).filter((k) => !k.burrowed).map((k) => Math.hypot(k.pos.x - u.pos.x, k.pos.y - u.pos.y)).sort((p, q) => p - q)[0];
+        const acts = u.actions === 2 ? '<b>2 actions</b>: click a blue tile to move, yellow to dash' : '<b>1 action</b> left: move to a blue tile';
+        const shoot = shootable
+          ? ', or click a <b>red-framed</b> enemy to shoot (ends the turn).'
+          : nearest !== undefined
+            ? `. <span class="warn">No enemy in range or sight yet (nearest ${Math.round(nearest)} tiles).</span> Move closer or press <b>O</b> for overwatch.`
+            : '.';
+        html = `${who}: ${acts}${shoot}`;
+      }
+    }
+    el.hidden = !html;
+    el.innerHTML = html;
+  }
+
+  /** Red columns where the next waves come in, once their approach is known. */
+  private updateWaveMarkers() {
+    const b = this.c?.battle;
+    if (!b || (this.mode !== 'deploy' && this.mode !== 'battle')) {
+      this.scene.setWaveMarkers(this.c, []);
+      return;
+    }
+    const list = b.waves
+      .map((w, i) => ({ w, i }))
+      .filter(({ w }) => waveRevealed(b, w))
+      .map(({ w, i }) => {
+        const ap = this.c.map.approaches.find((a) => a.id === w.approach)!;
+        const at = ap.entry[Math.floor(ap.entry.length / 2)];
+        const due = w.turn - b.turn;
+        const when = this.mode === 'deploy' ? `turn ${w.turn}` : due <= 0 ? 'now' : due === 1 ? 'next turn' : `turn ${w.turn}`;
+        const counts = new Map<string, number>();
+        for (const id of w.creatureIds) {
+          const sp = b.creatures.find((k) => k.id === id)!.species;
+          counts.set(sp, (counts.get(sp) ?? 0) + 1);
+        }
+        const what = [...counts].map(([sp, n]) => `${n} ${SPECIES[sp as keyof typeof SPECIES].name.toLowerCase()}${n > 1 ? 's' : ''}`).join(', ');
+        return { at, label: `WAVE ${i + 1} · ${when} · ${what}`, imminent: due <= 1 };
+      });
+    this.scene.setWaveMarkers(this.c, list);
   }
 
   // ---------------------------------------------------------------- helpers
@@ -568,6 +729,8 @@ export class App {
   // ---------------------------------------------------------------- rendering
 
   renderAll() {
+    this.renderHint();
+    this.updateWaveMarkers();
     this.renderObjective();
     this.renderHostiles();
     this.renderSquad();
@@ -613,7 +776,8 @@ export class App {
       <div class="kicker">Mission ${b.attack} of ${c.totalAttacks} · turn ${b.turn}</div>
       <div class="main">Defend <b>${esc(what)}</b></div>${meter}
       <div class="row"><span>${b.phase === 'enemy' ? 'The world moves' : 'Your move'}</span><b>${left} hostile${left === 1 ? '' : 's'} left</b></div>
-      <div class="row wave"><span>${nw ? `Next wave: turn ${nw.turn}` : 'No more waves'}</span><b>${nw ? `${nw.creatureIds.length} incoming` : ''}</b></div>`;
+      <div class="row wave"><span>${nw ? `Next wave: turn ${nw.turn}` : 'No more waves'}</span><b>${nw ? `${nw.creatureIds.length} incoming` : ''}</b></div>
+      ${nw ? `<div class="row"><span>${waveRevealed(b, nw) ? `From ${esc(this.c.map.approaches.find((a) => a.id === nw.approach)!.name)}` : 'Approach shown one turn before it arrives'}</span></div>` : ''}`;
   }
 
   private renderHostiles() {
@@ -700,6 +864,10 @@ export class App {
             // Like XCOM: go straight to the nearest target you can hit.
             const k = liveCreatures(b).filter((q) => canTarget(this.c, u.colonistId, w, q.id)).sort((p, q) => Math.hypot(p.pos.x - u.pos.x, p.pos.y - u.pos.y) - Math.hypot(q.pos.x - u.pos.x, q.pos.y - u.pos.y))[0];
             if (k) return this.openTarget(k.id);
+            // Nothing to shoot: say so, and stay ready to move.
+            this.aim = { kind: 'move' };
+            const near = liveCreatures(b).filter((q) => !q.burrowed).sort((p, q) => Math.hypot(p.pos.x - u.pos.x, p.pos.y - u.pos.y) - Math.hypot(q.pos.x - u.pos.x, q.pos.y - u.pos.y))[0];
+            this.toast(near ? `Nothing to shoot with the ${def.name.toLowerCase()}. Nearest: ${targetProblem(this.c, u.colonistId, w, near.id)} Move closer, or use Overwatch.` : 'Nothing to shoot yet.');
           }
           this.renderAll();
         },
@@ -773,10 +941,7 @@ export class App {
       if (this.tool) bar.insertAdjacentHTML('beforeend', `<div class="bar-note">${esc(this.buildTools().find((t) => t.tool === this.tool)?.name ?? '')} · Esc to put down</div>`);
       return;
     }
-    if (this.mode === 'deploy') {
-      bar.innerHTML = '<div class="bar-note" style="position:static;transform:none">Click a colonist, then a tile inside the dashed line.</div>';
-      return;
-    }
+    if (this.mode === 'deploy') return;
     if (this.mode !== 'battle') return;
     this.abilities().forEach((a, i) => add({ ...a, key: String(i + 1), onClick: a.run }));
   }
@@ -1015,6 +1180,30 @@ export class App {
     return null;
   }
 
+  /** For the hover tooltip: the selected colonist's chance on this creature, or why there is none. */
+  private shotSummary(creatureId: string): string {
+    const b = this.c.battle;
+    if (!b || !this.selected) return '';
+    const u = b.units.find((x) => x.colonistId === this.selected);
+    const col = this.c.colonists.find((x) => x.id === this.selected);
+    if (!u || !col || u.downed) return '';
+    const who = col.name.split(' ')[0];
+    const st = unitStats(col);
+    const lines: string[] = [];
+    for (const w of st.weapons) {
+      if (WEAPONS[w].area) continue;
+      const why = targetProblem(this.c, u.colonistId, w, creatureId);
+      if (why) {
+        if (!WEAPONS[w].melee) lines.push(`<div class="bad">${WEAPONS[w].name}: ${esc(why)}</div>`);
+      } else {
+        const bd = shotBreakdown(this.c, u.colonistId, w, creatureId, 'torso');
+        lines.push(`<div class="good">${WEAPONS[w].name}: ${bd.chance}% to the body. Click to aim.</div>`);
+      }
+    }
+    if (u.actions < 1) lines.unshift(`<div class="bad">${who} has no actions left this turn.</div>`);
+    return lines.length ? `<div style="margin-top:4px"><b>${esc(who)}</b>${lines.join('')}</div>` : '';
+  }
+
   private showTip(html: string, x: number, y: number) {
     const tip = $('tooltip');
     tip.innerHTML = html;
@@ -1045,6 +1234,7 @@ export class App {
       bits.push(k.burrowed
         ? '<b class="world">Something underground</b><span class="muted">It cannot be shot until it surfaces.</span>'
         : `<b class="world">${sp.name} · ${k.hp}/${k.maxHp}</b><div class="muted">${esc(sp.blurb)}</div>` +
+          this.shotSummary(k.id) +
           (known.length ? `<div>What you know it has become:</div>${known.map((a) => `<div class="world">${a.name}: ${esc(a.effect)}</div>`).join('')}` : ''));
     } else {
       const t = tileAt(c.map, h.x, h.y);

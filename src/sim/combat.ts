@@ -346,6 +346,14 @@ export function nextWave(b: Battle): Wave | null {
   return b.waves.find((w) => !w.arrived) ?? null;
 }
 
+/**
+ * Whether the player can see where a wave will come from. The first wave is known at
+ * deployment; every later wave shows its approach one turn before it arrives.
+ */
+export function waveRevealed(b: Battle, w: Wave): boolean {
+  return !w.arrived && w.turn - b.turn <= 1;
+}
+
 function freeTileNear(c: Campaign, entry: Vec[], burrowed: boolean): Vec | null {
   const b = battleOf(c);
   const taken = new Set([...b.units.map((u) => key(u.pos)), ...liveCreatures(b).map((k) => key(k.pos))]);
@@ -395,6 +403,26 @@ export function moveRange(c: Campaign, id: string): MoveRange {
   return { walk, dash };
 }
 
+/** Why this colonist cannot move to this tile right now, or null if they can. */
+export function moveProblem(c: Campaign, id: string, to: Vec): string | null {
+  const b = battleOf(c);
+  if (b.phase !== 'player') return 'Wait: the world is moving.';
+  const u = unitOf(b, id);
+  const col = colonistOf(c, id);
+  const who = col.name.split(' ')[0];
+  if (u.downed) return `${who} is down and cannot move.`;
+  if (u.actions === 0) return `${who} has no actions left this turn. Shooting and overwatch end a colonist's turn.`;
+  if (samePos(to, u.pos)) return `${who} is already there.`;
+  if (!inBounds(c.map, to.x, to.y) || !canStand(c.map, to)) return 'No one can stand there.';
+  if (occupiedAt(b, to)) return 'Someone is already standing there.';
+  const range = moveRange(c, id);
+  if (range.walk.some((p) => samePos(p, to)) || range.dash.some((p) => samePos(p, to))) return null;
+  if (col.scars.includes('shell_shock') && liveCreatures(b).some((k) => !k.burrowed && adjacent(k.pos, to))) return `Shell shock: ${who} will not stop next to a creature.`;
+  if (u.actions === 1) return `Out of reach with one action left. ${who} can only use the blue tiles now.`;
+  if (!unitStats(col).canDash) return `Out of reach. Burned lungs: ${who} cannot dash, so only the blue tiles are in reach.`;
+  return 'Out of reach. Blue tiles cost one action; yellow tiles cost both.';
+}
+
 export function moveUnit(c: Campaign, id: string, to: Vec): BattleEvent[] | null {
   const b = battleOf(c);
   if (b.phase !== 'player') return null;
@@ -434,16 +462,30 @@ function positionBucket(c: Campaign, from: Vec, to: Vec): PositionBucket {
 
 /** Can this unit shoot this creature with this weapon right now (ignoring actions)? */
 export function canTarget(c: Campaign, id: string, weapon: WeaponId, targetId: string): boolean {
+  return targetProblem(c, id, weapon, targetId) === null;
+}
+
+/** Why this colonist cannot shoot this creature with this weapon right now, or null if they can. */
+export function targetProblem(c: Campaign, id: string, weapon: WeaponId, targetId: string): string | null {
   const b = battleOf(c);
   const u = unitOf(b, id);
   const k = creatureOf(b, targetId);
   const w = WEAPONS[weapon];
-  const st = unitStats(colonistOf(c, id));
-  if (!k.alive || !k.arrived || k.burrowed || u.downed) return false;
-  if (!st.weapons.includes(weapon) || w.area) return false;
-  if (w.melee) return adjacent(u.pos, k.pos);
+  const col = colonistOf(c, id);
+  const st = unitStats(col);
+  const who = col.name.split(' ')[0];
+  if (!k.alive || !k.arrived) return 'There is nothing there to shoot.';
+  if (k.burrowed) return 'It is underground. It can be shot once it surfaces.';
+  if (u.downed) return `${who} is down.`;
+  if (col.retired) return `${who} can no longer fight.`;
+  if (!st.weapons.includes(weapon)) return `${who} cannot use the ${w.name.toLowerCase()}.`;
+  if (w.area) return `The ${w.name.toLowerCase()} is aimed at a tile, not a creature.`;
+  if (w.melee) return adjacent(u.pos, k.pos) ? null : 'The knife only reaches a creature on a neighbouring tile.';
   const d = dist(u.pos, k.pos);
-  return d <= w.range && hasLos(c.map, u.pos, k.pos, st.sight);
+  if (d > w.range) return `Out of range: it is ${Math.round(d)} tiles away and the ${w.name.toLowerCase()} reaches ${w.range}.`;
+  if (d > st.sight) return `Too far for ${who} to see: ${st.sight} tiles with a lost eye.`;
+  if (!hasLos(c.map, u.pos, k.pos, st.sight)) return 'No line of sight: rock, a wall, a building, thorn or higher ground is in the way.';
+  return null;
 }
 
 export function shotBreakdown(c: Campaign, id: string, weapon: WeaponId, targetId: string, part: BodyPart, reaction = false): ShotBreakdown {
