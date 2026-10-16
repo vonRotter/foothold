@@ -1,9 +1,10 @@
 import * as THREE from 'three';
 import type { BattleEvent } from '../sim/combat';
 import { ROLES, SPECIES, WEAPONS } from '../sim/data';
-import { inBounds, tileAt } from '../sim/map';
+import { CENTER, COLONY_RADIUS, chebyshev, inBounds, tileAt } from '../sim/map';
 import type { Building, Campaign, Creature, Vec } from '../sim/types';
 import { PAL } from './palette';
+import { WORLD_TIME, instanced, modelObject, type Assets, type FileKey, type Model, type Treatment } from './assets';
 
 const ELEV = 0.55; // world height per elevation level
 const WATER_LEVEL = -0.14;
@@ -79,6 +80,8 @@ export class Scene3D {
   private time = 0;
 
   speed = 1;
+  /** Kenney models, if loaded. Without them everything is drawn from primitives. */
+  assets: Assets | null = null;
   /** Skip all animation: events resolve instantly. */
   instant = false;
 
@@ -193,6 +196,7 @@ export class Scene3D {
     this.timer.update();
     const dt = Math.min(0.05, this.timer.getDelta());
     this.time += dt;
+    WORLD_TIME.value = this.time;
     const pan = 18 * dt * (this.distance / 26);
     if (this.keys.has('w') || this.keys.has('arrowup')) this.panBy(0, -pan);
     if (this.keys.has('s') || this.keys.has('arrowdown')) this.panBy(0, pan);
@@ -277,7 +281,7 @@ export class Scene3D {
       this.terrain.remove(ch);
       ch.traverse((o) => {
         const m = o as THREE.Mesh;
-        if (m.geometry) m.geometry.dispose();
+        if (m.geometry && !o.userData.shared) m.geometry.dispose();
       });
     }
     const map = c.map;
@@ -297,6 +301,20 @@ export class Scene3D {
     const water: THREE.Matrix4[] = [];
     const shallows: THREE.Matrix4[] = [];
     const crates: THREE.Matrix4[] = [];
+    // Model placements, grouped per model so each becomes a few instanced meshes.
+    const buckets = new Map<Model, THREE.Matrix4[]>();
+    const A = this.assets;
+    const model = (k: FileKey, t: Treatment = 'none', v = 0) => A?.get(k, t, v) ?? null;
+    const put = (m: Model | null, mx: THREE.Matrix4 | null): boolean => {
+      if (!m || !mx) return false;
+      let l = buckets.get(m);
+      if (!l) buckets.set(m, (l = []));
+      l.push(mx);
+      return true;
+    };
+    const ROCKS: FileKey[] = ['rockTallA', 'rockTallD', 'rockTallG', 'stoneTallB'];
+    const SCREE: FileKey[] = ['rockSmallA', 'rockSmallC', 'rockFlat', 'rockSlab'];
+    const TREES: FileKey[] = ['treeDefault', 'treeOak', 'treeFat', 'treeDetailed', 'treePlateau', 'treeThin', 'treePalm'];
     let padMin = { x: Infinity, y: Infinity };
     let padMax = { x: -Infinity, y: -Infinity };
     const lowerBy = (x: number, y: number, e: number) =>
@@ -333,24 +351,61 @@ export class Scene3D {
           const lt = tileAt(map, x + dx, y + dy);
           if (lt.base === 'rock' || lt.base === 'tree' || lt.buildingId || lt.structure) continue;
           const s = 0.25 + hash(i + dx * 13 + dy * 17) * 0.25;
+          const sk = SCREE[Math.floor(hash(i * 3 + dx + 2 * dy) * SCREE.length)];
+          const scree = model(sk, 'rock', i);
+          if (put(scree, scree && place(scree, x + dx * 0.42, lt.elevation * ELEV, y + dy * 0.42, { w: s * 1.6, rot: hash(i + dx) * 6.28 }))) continue;
           rocks.push(new THREE.Matrix4().compose(
             new THREE.Vector3(x + dx * 0.42, lt.elevation * ELEV + s * 0.4, y + dy * 0.42),
             new THREE.Quaternion().setFromEuler(new THREE.Euler(r * 3, hash(i + dx) * 6, 0)),
             new THREE.Vector3(s * 1.3, s, s * 1.1),
           ));
         }
+        // Cliff faces: a rock wall down every edge that drops two levels or more.
+        if (t.base !== 'water' && t.base !== 'ford') {
+          for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+            if (!inBounds(map, x + dx, y + dy)) continue;
+            const lt = tileAt(map, x + dx, y + dy);
+            const lower = lt.base === 'water' ? WATER_LEVEL : lt.base === 'ford' ? FORD_LEVEL : lt.elevation * ELEV;
+            if (t.elevation - lt.elevation < 2) continue;
+            const cliff = model('cliff', 'cliff');
+            put(cliff, cliff && place(cliff, x + dx * 0.36, lower - 0.05, y + dy * 0.36, { dims: [1.02, top - lower + 0.12, 0.34], rot: Math.atan2(dx, dy) + Math.PI }));
+          }
+        }
         if (t.structure?.kind === 'crate') {
           crates.push(new THREE.Matrix4().compose(new THREE.Vector3(x, top + 0.3, y), new THREE.Quaternion().setFromEuler(new THREE.Euler(0, (Math.floor(r * 4) * Math.PI) / 2, 0)), new THREE.Vector3(0.8, 0.6, 0.6)));
         }
 
         if (t.base === 'tree') {
+          const mush = hash(i * 13) < 0.18;
+          const tk = mush ? (hash(i * 17) < 0.5 ? 'mushroomRed' : 'mushroomTan') : TREES[Math.floor(hash(i * 5) * TREES.length)];
+          const tm = model(tk, mush ? 'alienMushroom' : 'alienTree', Math.floor(hash(i * 11) * 4));
+          const jx = x + (r - 0.5) * 0.2;
+          const jz = y + (hash(i + 7) - 0.5) * 0.2;
+          if (put(tm, tm && place(tm, jx, top, jz, { h: mush ? 0.9 + r * 0.6 : 1.25 + r * 0.6, rot: hash(i + 3) * 6.28 }))) continue;
           const s = 0.75 + r * 0.4;
           trees.push(new THREE.Matrix4().compose(new THREE.Vector3(x + (r - 0.5) * 0.2, top + 0.9 * s, y + (hash(i + 7) - 0.5) * 0.2), new THREE.Quaternion().setFromEuler(new THREE.Euler(0, r * 6, 0)), new THREE.Vector3(s, s * 1.15, s)));
           trunks.push(new THREE.Matrix4().compose(new THREE.Vector3(x, top + 0.3, y), new THREE.Quaternion(), new THREE.Vector3(1, 1, 1)));
         }
         if (t.base === 'rock') {
+          const rk = ROCKS[Math.floor(hash(i * 19) * ROCKS.length)];
+          const rm = model(rk, 'rock', Math.floor(hash(i * 23) * 3));
+          if (put(rm, rm && place(rm, x, top, y, { h: 0.95 + r * 0.45, maxW: 1.0, rot: hash(i + 5) * 6.28 }))) {
+            // fall through to growth/rubble below
+          } else {
           const s = 0.85 + r * 0.35;
           rocks.push(new THREE.Matrix4().compose(new THREE.Vector3(x, top + 0.35 * s, y), new THREE.Quaternion().setFromEuler(new THREE.Euler(r * 3, hash(i + 3) * 6, hash(i + 5) * 3)), new THREE.Vector3(s * 0.75, s * 0.75 + hash(i + 11) * 0.5, s * 0.75)));
+          }
+        }
+        // Small alien plants on open ground away from the colony, and lilies on the river.
+        const open = (t.base === 'ground' || t.base === 'sand') && !t.structure && !t.buildingId && !t.growth;
+        if (open && chebyshev({ x, y }, CENTER) > COLONY_RADIUS && hash(i * 29) < 0.07) {
+          const pk: FileKey = hash(i * 31) < 0.5 ? 'bush' : 'leafs';
+          const pm = model(pk, 'alienPlant', Math.floor(hash(i * 37) * 3));
+          put(pm, pm && place(pm, x + (hash(i * 41) - 0.5) * 0.5, top, y + (hash(i * 43) - 0.5) * 0.5, { w: 0.4 + hash(i * 47) * 0.3, rot: hash(i * 53) * 6.28 }));
+        }
+        if (t.base === 'water' && hash(i * 59) < 0.12) {
+          const lm = model('lily', 'alienLily');
+          put(lm, lm && place(lm, x + (hash(i * 61) - 0.5) * 0.4, WATER_LEVEL + 0.01, y + (hash(i * 67) - 0.5) * 0.4, { w: 0.45 + hash(i * 71) * 0.3, rot: hash(i * 73) * 6.28 }));
         }
         if (t.growth) {
           const v = Math.floor(r * 3);
@@ -397,6 +452,21 @@ export class Scene3D {
         const top = t.elevation * ELEV;
         const tall = t.structure.kind === 'wall' ? 1.15 : 0.5;
         const overgrown = t.structure.overgrowth >= 2;
+        const wallModel = model('wall', overgrown ? 'overgrownWall' : 'colonyWall');
+        if (wallModel) {
+          const ax = this.hasWall(c, x - 1, y) || this.hasWall(c, x + 1, y);
+          const az = this.hasWall(c, x, y - 1) || this.hasWall(c, x, y + 1);
+          const thick = t.structure.kind === 'wall' ? 0.42 : 0.36;
+          if (ax || !az) put(wallModel, place(wallModel, x, top, y, { dims: [1.0, tall, thick] }));
+          if (az) put(wallModel, place(wallModel, x, top, y, { dims: [1.0, tall, thick], rot: Math.PI / 2 }));
+          if (t.structure.overgrowth > 0) {
+            const vine = new THREE.Mesh(thornGeometry(Math.floor(hash(x * 41 + y) * 3)), thornMat);
+            vine.position.set(x, top + tall * 0.6, y);
+            vine.scale.set(0.9, 0.5 + t.structure.overgrowth * 0.15, 0.9);
+            this.terrain.add(vine);
+          }
+          continue;
+        }
         const mat = new THREE.MeshStandardMaterial({ color: overgrown ? PAL.wallOvergrown : PAL.wall, roughness: 0.8 });
         // Join to neighbouring walls so lines read as lines.
         const wx = this.hasWall(c, x - 1, y) || this.hasWall(c, x + 1, y);
@@ -418,7 +488,13 @@ export class Scene3D {
       }
     }
 
-    for (const b of c.buildings) if (!b.destroyed) this.terrain.add(buildingMesh(c, b));
+    for (const b of c.buildings) if (!b.destroyed) this.terrain.add(buildingMesh(c, b, this.assets));
+    for (const [m, mats] of buckets) {
+      for (const im of instanced(m, mats)) {
+        im.userData.shared = true;
+        this.terrain.add(im);
+      }
+    }
   }
 
   private hasWall(c: Campaign, x: number, y: number): boolean {
@@ -446,7 +522,7 @@ export class Scene3D {
         const col = c.colonists.find((x) => x.id === u.colonistId)!;
         let g = this.units.get(u.colonistId);
         if (!g) {
-          g = colonistMesh(col.role, col.retired);
+          g = colonistMesh(col.role, col.retired, this.assets);
           g.userData.kind = 'colonist';
           this.scene.add(g);
           this.units.set(u.colonistId, g);
@@ -832,12 +908,72 @@ function mergeGeometries(geos: THREE.BufferGeometry[]): THREE.BufferGeometry {
   return out;
 }
 
-function buildingMesh(c: Campaign, b: Building): THREE.Group {
+/**
+ * A matrix that stands a model on (x, baseY, z): centred, its base on the ground, turned by
+ * `rot`. Size by height (`h`, optionally capped by `maxW`), by footprint (`w`), or per axis (`dims`).
+ */
+function place(m: Model, x: number, baseY: number, z: number, o: { h?: number; w?: number; maxW?: number; dims?: [number, number, number]; rot?: number }): THREE.Matrix4 {
+  const size = m.box.getSize(new THREE.Vector3());
+  const c = m.box.getCenter(new THREE.Vector3());
+  let sx = 1;
+  let sy = 1;
+  let sz = 1;
+  if (o.dims) {
+    sx = o.dims[0] / Math.max(1e-3, size.x);
+    sy = o.dims[1] / Math.max(1e-3, size.y);
+    sz = o.dims[2] / Math.max(1e-3, size.z);
+  } else {
+    let k = o.h ? o.h / Math.max(1e-3, size.y) : o.w ? o.w / Math.max(1e-3, size.x, size.z) : 1;
+    if (o.maxW) k = Math.min(k, o.maxW / Math.max(1e-3, size.x, size.z));
+    sx = sy = sz = k;
+  }
+  return new THREE.Matrix4()
+    .makeTranslation(x, baseY, z)
+    .multiply(new THREE.Matrix4().makeRotationY(o.rot ?? 0))
+    .multiply(new THREE.Matrix4().makeScale(sx, sy, sz))
+    .multiply(new THREE.Matrix4().makeTranslation(-c.x, -m.box.min.y, -c.z));
+}
+
+/** A single placed model as a group of meshes. */
+function placed(m: Model, o: Parameters<typeof place>[4] & { x?: number; y?: number; z?: number }): THREE.Group {
+  const g = modelObject(m);
+  g.applyMatrix4(place(m, o.x ?? 0, o.y ?? 0, o.z ?? 0, o));
+  return g;
+}
+
+function buildingMesh(c: Campaign, b: Building, assets: Assets | null): THREE.Group {
   const g = new THREE.Group();
   const top = tileAt(c.map, b.pos.x, b.pos.y).elevation * ELEV;
   const cx = b.pos.x + (b.size - 1) / 2;
   const cz = b.pos.y + (b.size - 1) / 2;
   g.position.set(cx, top, cz);
+  const shell = assets?.get(b.kind === 'habitat' ? 'habitat' : b.kind === 'workshop' ? 'hangarB' : 'hangarA');
+  if (shell) {
+    // Kenney hangars: the door faces south. Roof equipment says what the building is.
+    const w = b.size - 0.1;
+    const h = b.kind === 'habitat' ? 1.5 : 1.15;
+    g.add(placed(shell, { dims: [w, h, w] }));
+    const roof = (k: FileKey, o: Parameters<typeof placed>[1]) => {
+      const m = assets!.get(k);
+      if (m) g.add(placed(m, { ...o, y: h - 0.05 }));
+    };
+    if (b.kind === 'habitat') {
+      roof('antenna', { h: 0.55, x: 0.7, z: -0.6 });
+      roof('dish', { h: 0.6, x: -0.7, z: -0.5, rot: 0.6 });
+    }
+    if (b.kind === 'lab') roof('dish', { h: 0.7, z: -0.1, rot: -0.5 });
+    if (b.kind === 'workshop') roof('generator', { h: 0.45, rot: Math.PI / 2 });
+    if (b.kind === 'infirmary') {
+      const trim = new THREE.MeshStandardMaterial({ color: PAL.buildingTrim, roughness: 0.6 });
+      for (const [bw, bd] of [[0.9, 0.25], [0.25, 0.9]]) {
+        const bar = new THREE.Mesh(new THREE.BoxGeometry(bw, 0.12, bd), trim);
+        bar.position.set(0, h + 0.03, 0);
+        bar.castShadow = true;
+        g.add(bar);
+      }
+    }
+    return g;
+  }
   const body = new THREE.MeshStandardMaterial({ color: PAL.building, roughness: 0.7 });
   const trim = new THREE.MeshStandardMaterial({ color: PAL.buildingTrim, roughness: 0.6 });
   const dark = new THREE.MeshStandardMaterial({ color: PAL.buildingDark, roughness: 0.6 });
@@ -883,7 +1019,15 @@ function buildingMesh(c: Campaign, b: Building): THREE.Group {
   return g;
 }
 
-function colonistMesh(role: keyof typeof ROLES, retired: boolean): THREE.Group {
+/** The gun each role carries, from the Blaster Kit, and how long it is drawn. */
+const GUNS: Record<keyof typeof ROLES, { key: FileKey; length: number }> = {
+  rifleman: { key: 'gunRifle', length: 0.55 },
+  marksman: { key: 'gunLong', length: 0.75 },
+  engineer: { key: 'gunFlamer', length: 0.5 },
+  xenobiologist: { key: 'gunPistol', length: 0.3 },
+};
+
+function colonistMesh(role: keyof typeof ROLES, retired: boolean, assets: Assets | null): THREE.Group {
   const g = new THREE.Group();
   const fig = new THREE.Group();
   fig.name = 'figure';
@@ -903,8 +1047,17 @@ function colonistMesh(role: keyof typeof ROLES, retired: boolean): THREE.Group {
   add(new THREE.BoxGeometry(0.44, 0.12, 0.28), band, 0, 0.66, 0);
   add(new THREE.BoxGeometry(0.24, 0.24, 0.24), suit, 0, 0.95, 0);
   add(new THREE.BoxGeometry(0.2, 0.07, 0.03), band, 0, 0.97, 0.13);
-  // Rifle: a straight bar.
-  add(new THREE.BoxGeometry(0.06, 0.06, 0.5), dark, 0.25, 0.6, 0.15);
+  const gun = assets?.get(GUNS[role].key, 'colonyGun');
+  if (gun) {
+    // Held at the hip, pointing forward (+z).
+    const size = gun.box.getSize(new THREE.Vector3());
+    const gm = placed(gun, { w: GUNS[role].length * Math.max(size.x, size.z) / size.z, x: 0.27, y: 0.48, z: 0.12 });
+    gm.name = 'gun';
+    fig.add(gm);
+  } else {
+    // Rifle: a straight bar.
+    add(new THREE.BoxGeometry(0.06, 0.06, 0.5), dark, 0.25, 0.6, 0.15);
+  }
   g.add(fig);
   // Overwatch: a square bracket floating above the head.
   const ow = new THREE.LineSegments(

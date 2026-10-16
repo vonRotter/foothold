@@ -141,7 +141,7 @@ export class App {
         <kbd>Tab · Space</kbd><span>Next colonist · end turn</span>
         <kbd>Z · L · Esc</kbd><span>Undo build · log · cancel</span>
       </div>
-      <p class="credits">Built with three.js (MIT licence). No third-party art yet.</p>
+      <p class="credits">Models by Kenney (www.kenney.nl): Space Kit, Space Station Kit, Nature Kit and Blaster Kit, CC0. Built with three.js (MIT). Full credits in CREDITS.md.</p>
       <div class="actions"><button class="btn primary" data-act="begin">Land</button></div>
     `, { begin: () => this.enterBuild() });
   }

@@ -37,6 +37,7 @@ URL options:
 | `?seed=42` | Fixed campaign seed. The same seed and the same choices replay exactly. |
 | `?quality=low` | No shadows or antialiasing, for slow GPUs. |
 | `?instant=1` | Skip all animation. |
+| `?models=0` | Draw everything from primitives, without the Kenney models. |
 
 Other commands:
 
@@ -75,7 +76,9 @@ src/sim/        The rules. No rendering code; deterministic from a seed.
   mind.ts         The adaptation rule, intent and approach selection, dissection reports
   campaign.ts     Build phase, jobs, placement and undo, aftermath, scars, world growth
 src/render/     three.js: terrain, water, units, overlays, picking, camera, event playback
+  assets.ts       Loads the Kenney models, merges them for instancing, and applies the alien treatment
 src/ui/         HUD, icons, portraits, and the game-flow controller
+public/assets/  The Kenney models the game uses, each pack with its own License.txt
 tests/          Unit tests for the rules
 probe/          Balance probe (npm run probe)
 ```

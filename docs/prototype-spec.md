@@ -207,6 +207,8 @@ After each mission, thorn spreads 6 + 3 × (missions so far) tiles. It grows fro
 
 Human things are boxes and right angles: walls, buildings, crates, colonists, rubble, the apron grid, and the interface icons. The world is curves: thorn as arcing tubes, rounded rocks and scree at the foot of cliffs, Grazers with curved spines, segmented Rootcrawlers, and round hostile markers. The world idles with a slow breathing motion; the colony does not move. The battle map and the build map are the same view.
 
+Models come from four Kenney packs (CC0; see `CREDITS.md`), chosen to keep the two languages apart. The colony's buildings, walls and guns come from the Space, Space Station and Blaster kits: boxy, recoloured into the colony's greys and orange. The world's rocks, cliff faces, trees, mushrooms and plants come from the Nature Kit with an "alien treatment" applied in code: purple, teal and crimson canopies, bone-pale or near-black trunks, smoothed surfaces, bent and twisted silhouettes, and a slow sway. Crates stay generated boxes, because the kits' containers are round. If a model fails to load, its primitive stand-in is drawn instead.
+
 The HUD follows XCOM's layout so the map stays visible: an objective box top-left (target and its HP, turn, next wave), hostile markers top-right (click to aim), a three-line event feed that fades, the squad and the selected colonist bottom-left, abilities or build tools bottom-centre with number keys, and the commit button (End turn, Next mission, Start mission) bottom-right. The full log is a drawer (L).
 
 ---
