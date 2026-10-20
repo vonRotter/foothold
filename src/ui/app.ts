@@ -58,6 +58,7 @@ import { Scene3D, type OverlaySpec } from '../render/scene';
 import { icon } from './icons';
 import { drawPortrait } from './portrait';
 import { saveSettings, type Settings } from './settings';
+import { profileKey } from '../couch';
 
 type Mode = 'title' | 'build' | 'deploy' | 'battle' | 'aftermath' | 'ending';
 type Aim = { kind: 'move' } | { kind: 'aim'; weapon: WeaponId } | { kind: 'throw'; weapon: WeaponId };
@@ -69,7 +70,9 @@ function esc(s: string): string {
   return s.replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[ch]!);
 }
 
-const SAVE_KEY = 'foothold.save';
+// The campaign save is per Couch Party Island profile when opened from its solo island (see couch.ts).
+const SAVE_KEY = profileKey('foothold.save');
+const HELP_KEY = profileKey('foothold.helpSeen');
 
 /** Browser storage can be missing or blocked (private windows, previews); never let that break the game. */
 function readSave(): SaveFile | null {
@@ -709,7 +712,7 @@ export class App {
       <div class="actions"><button class="btn primary" data-act="ok">Got it</button></div>
     `, { ok: () => this.closeModal() });
     try {
-      localStorage.setItem('foothold.helpSeen', '1');
+      localStorage.setItem(HELP_KEY, '1');
     } catch {
       // Storage can be unavailable; the help is still reachable with H.
     }
@@ -717,7 +720,7 @@ export class App {
 
   private helpSeen(): boolean {
     try {
-      return localStorage.getItem('foothold.helpSeen') === '1';
+      return localStorage.getItem(HELP_KEY) === '1';
     } catch {
       return true;
     }
